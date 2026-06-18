@@ -1,0 +1,3679 @@
+import streamlit as st
+import streamlit.components.v1 as components
+try:
+    from streamlit_autorefresh import st_autorefresh
+except Exception:
+    st_autorefresh = None
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import plotly.graph_objects as go
+import plotly.express as px
+import feedparser
+import requests
+import html
+import json
+import os
+import re
+import io
+import xml.etree.ElementTree as ET
+from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
+try:
+    from supabase import create_client
+except Exception:
+    create_client = None
+
+# ============================================================
+# PAGE CONFIG
+# ============================================================
+
+st.set_page_config(
+    page_title="Margin Manor Terminal V83",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ============================================================
+# AUTO-REFRESH / CACHE SETTINGS
+# ============================================================
+
+# The clock below updates every second in the browser.
+# Market data is intentionally cached separately to avoid hammering free/delayed APIs.
+DEFAULT_AUTO_REFRESH_SECONDS = 60
+MARKET_DATA_CACHE_TTL_SECONDS = 60
+NEWS_CACHE_TTL_SECONDS = 300
+CALENDAR_CACHE_TTL_SECONDS = 300
+BOT_ANALYSIS_INTERVAL_SECONDS = 3600
+BOT_HISTORY_FILE = "margin_manor_xau_bot_history.json"
+SUPABASE_HISTORY_LIMIT = 240
+SUPABASE_DOT_TARGET_YEAR = 2026
+FRED_CACHE_TTL_SECONDS = 900
+OANDA_PRACTICE_URL = "https://api-fxpractice.oanda.com"
+OANDA_LIVE_URL = "https://api-fxtrade.oanda.com"
+FED_FOMC_CALENDAR_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+
+
+# ============================================================
+# BLOOMBERG-INSPIRED DENSE TERMINAL CSS
+# ============================================================
+
+st.markdown(
+    """
+    <style>
+    html, body, [class*="css"] {
+        font-family: "Courier New", monospace;
+        font-size: 13px;
+    }
+
+    .stApp {
+        background-color: #000000;
+        color: #f2f2f2;
+    }
+
+    header[data-testid="stHeader"] {
+        background-color: #000000;
+    }
+
+    .block-container {
+        padding-top: 0.55rem;
+        padding-bottom: 3.3rem;
+        max-width: 1780px;
+    }
+
+    section[data-testid="stSidebar"] {
+        background-color: #050505;
+        border-right: 1px solid #2b2b2b;
+    }
+
+    h1 {
+        color: #ffb000;
+        letter-spacing: 1px;
+        font-size: 1.9rem;
+        margin-bottom: 0.1rem;
+    }
+
+    h2, h3 {
+        color: #ffb000;
+        letter-spacing: 0.3px;
+        margin-top: 0.45rem;
+        margin-bottom: 0.35rem;
+    }
+
+    .terminal-subtitle {
+        color: #aaaaaa;
+        font-size: 0.78rem;
+        margin-bottom: 0.35rem;
+    }
+
+    .function-bar {
+        background: linear-gradient(90deg, #171000, #050505 55%, #171000);
+        border: 1px solid #ffb000;
+        color: #ffb000;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+        font-weight: bold;
+        font-size: 0.9rem;
+    }
+
+    .terminal-panel {
+        background-color: #070707;
+        border: 1px solid #2e2e2e;
+        border-radius: 2px;
+        padding: 8px;
+        margin-bottom: 8px;
+        box-shadow: 0px 0px 9px rgba(255, 176, 0, 0.04);
+    }
+
+    .terminal-panel-title {
+        color: #ffb000;
+        font-size: 0.82rem;
+        font-weight: bold;
+        margin-bottom: 5px;
+        border-bottom: 1px solid #303030;
+        padding-bottom: 4px;
+    }
+
+    .terminal-small {
+        color: #aaaaaa;
+        font-size: 0.72rem;
+    }
+
+    .metric-box {
+        background-color: #070707;
+        border: 1px solid #333333;
+        border-radius: 2px;
+        padding: 8px;
+        min-height: 74px;
+        margin-bottom: 8px;
+    }
+
+    .metric-title {
+        color: #ffb000;
+        font-size: 0.7rem;
+        margin-bottom: 3px;
+        text-transform: uppercase;
+    }
+
+    .metric-value {
+        color: #ffffff;
+        font-size: 1.15rem;
+        font-weight: bold;
+        line-height: 1.1;
+    }
+
+    .metric-note {
+        color: #aaaaaa;
+        font-size: 0.68rem;
+        margin-top: 3px;
+    }
+
+    .positive { color: #00ff99; }
+    .negative { color: #ff4d4d; }
+    .neutral { color: #ffb000; }
+    .danger { color: #ff4d4d; font-weight: bold; }
+    .success { color: #00ff99; font-weight: bold; }
+    .warning { color: #ffb000; font-weight: bold; }
+    .dim { color: #777777; }
+
+    .tape-container {
+        width: 100%;
+        overflow: hidden;
+        background-color: #050505;
+        border-top: 1px solid #333333;
+        border-bottom: 1px solid #333333;
+        padding: 6px 0;
+        margin-bottom: 8px;
+        white-space: nowrap;
+    }
+
+    .tape {
+        display: inline-block;
+        animation: ticker 48s linear infinite;
+        font-size: 0.78rem;
+    }
+
+    .tape-item {
+        margin-right: 25px;
+        font-weight: bold;
+    }
+
+    @keyframes ticker {
+        0% { transform: translateX(0%); }
+        100% { transform: translateX(-50%); }
+    }
+
+    .news-card {
+        background-color: #080808;
+        border: 1px solid #303030;
+        border-left: 3px solid #ffb000;
+        border-radius: 2px;
+        padding: 8px;
+        margin-bottom: 7px;
+    }
+
+    .news-source {
+        color: #ffb000;
+        font-size: 0.68rem;
+    }
+
+    .news-title {
+        color: #ffffff;
+        font-weight: bold;
+        margin-top: 3px;
+        margin-bottom: 3px;
+        font-size: 0.78rem;
+    }
+
+    .alert-card {
+        background-color: #140707;
+        border: 1px solid #552222;
+        border-left: 3px solid #ff4d4d;
+        border-radius: 2px;
+        padding: 7px;
+        margin-bottom: 6px;
+        color: #ffffff;
+        font-size: 0.74rem;
+    }
+
+    .good-alert-card {
+        background-color: #061008;
+        border: 1px solid #225533;
+        border-left: 3px solid #00ff99;
+        border-radius: 2px;
+        padding: 7px;
+        margin-bottom: 6px;
+        color: #ffffff;
+        font-size: 0.74rem;
+    }
+
+    .warning-alert-card {
+        background-color: #161005;
+        border: 1px solid #554000;
+        border-left: 3px solid #ffb000;
+        border-radius: 2px;
+        padding: 7px;
+        margin-bottom: 6px;
+        color: #ffffff;
+        font-size: 0.74rem;
+    }
+
+    .status-bar {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        background-color: #050505;
+        border-top: 1px solid #ffb000;
+        color: #ffb000;
+        padding: 6px 12px;
+        z-index: 9999;
+        font-size: 0.72rem;
+        white-space: nowrap;
+    }
+
+    .command-help {
+        color: #aaaaaa;
+        font-size: 0.72rem;
+        line-height: 1.35;
+    }
+
+    div[data-testid="stMetricLabel"] { color: #ffb000; }
+    div[data-testid="stMetricValue"] { color: #ffffff; }
+    div[data-testid="stMetricDelta"] { font-size: 0.78rem; }
+
+    .stTextInput input, .stTextArea textarea {
+        background-color: #030303;
+        color: #ffb000;
+        border: 1px solid #ffb000;
+        font-family: "Courier New", monospace;
+    }
+
+    .stSelectbox div, .stMultiSelect div, .stNumberInput input {
+        font-family: "Courier New", monospace;
+    }
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid #2a2a2a;
+    }
+
+    /* Mobile optimisation: make header, clock area, command bar and footer readable on phones */
+    @media (max-width: 768px) {
+        html, body, [class*="css"] {
+            font-size: 11px;
+        }
+
+        .block-container {
+            padding-top: 0.35rem;
+            padding-left: 0.55rem;
+            padding-right: 0.55rem;
+            padding-bottom: 5.2rem;
+            max-width: 100%;
+        }
+
+        h1 {
+            font-size: 1.35rem;
+            line-height: 1.15;
+            letter-spacing: 0.4px;
+        }
+
+        h2, h3 {
+            font-size: 1.05rem;
+            line-height: 1.15;
+        }
+
+        .terminal-subtitle {
+            font-size: 0.66rem;
+            line-height: 1.25;
+        }
+
+        .function-bar {
+            font-size: 0.66rem;
+            line-height: 1.25;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            padding: 7px 8px;
+        }
+
+        .tape-container {
+            padding: 4px 0;
+        }
+
+        .tape {
+            font-size: 0.64rem;
+            animation-duration: 38s;
+        }
+
+        .metric-box {
+            min-height: 62px;
+            padding: 6px;
+        }
+
+        .metric-title {
+            font-size: 0.58rem;
+        }
+
+        .metric-value {
+            font-size: 0.92rem;
+        }
+
+        .metric-note {
+            font-size: 0.56rem;
+        }
+
+        .status-bar {
+            font-size: 0.56rem;
+            line-height: 1.2;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            padding: 6px 8px;
+        }
+
+        .stTextInput input {
+            font-size: 0.72rem;
+        }
+    }
+
+
+    .mobile-safe-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+        gap: 8px;
+        margin-bottom: 8px;
+    }
+
+    .institutional-note {
+        background-color: #070707;
+        border: 1px solid #303030;
+        border-left: 3px solid #ffb000;
+        padding: 9px;
+        margin-bottom: 8px;
+        font-size: 0.74rem;
+        line-height: 1.35;
+        color: #dddddd;
+    }
+
+    .check-pass { color: #00ff99; font-weight: bold; }
+    .check-fail { color: #ff4d4d; font-weight: bold; }
+    .check-wait { color: #ffb000; font-weight: bold; }
+
+    .phone-stack-note {
+        color: #aaaaaa;
+        font-size: 0.68rem;
+        margin-top: -3px;
+        margin-bottom: 8px;
+    }
+
+    .bot-card {
+        background-color: #07111d;
+        border: 1px solid #24496e;
+        border-left: 4px solid #ffb000;
+        border-radius: 14px;
+        padding: 12px 14px;
+        margin-bottom: 10px;
+        color: #eef6ff;
+        font-size: 0.78rem;
+        line-height: 1.35;
+        max-width: 980px;
+    }
+
+    .bot-card-bull { border-left-color: #00ff99; background-color: #06140c; }
+    .bot-card-bear { border-left-color: #ff4d4d; background-color: #160808; }
+    .bot-card-wait { border-left-color: #ffb000; background-color: #151005; }
+
+    .bot-meta {
+        color: #7fb8ff;
+        font-size: 0.72rem;
+        margin-bottom: 4px;
+    }
+
+    .bot-verdict {
+        font-size: 0.98rem;
+        font-weight: bold;
+        margin-bottom: 4px;
+    }
+
+    .bot-line {
+        color: #d7e9ff;
+        margin-top: 3px;
+    }
+
+    .dotplot-note {
+        background-color: #070707;
+        border: 1px solid #333333;
+        border-left: 3px solid #ffb000;
+        padding: 10px;
+        color: #dddddd;
+        font-size: 0.75rem;
+        line-height: 1.35;
+        margin-bottom: 8px;
+    }
+
+    a { color: #ffb000 !important; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# ============================================================
+# TERMINAL CONSTANTS
+# ============================================================
+
+DEFAULT_WATCHLIST = (
+    "SPY, QQQ, DIA, IWM, ^GSPC, ^NDX, ^DJI, ^RUT, "
+    "XLK, XLF, XLE, XLV, XLY, XLP, XLI, XLB, XLU, XLRE, XLC, "
+    "GLD, SLV, GC=F, SI=F, GDX, GDXJ, USO, UNG, CL=F, NG=F, HG=F, "
+    "TLT, IEF, SHY, HYG, LQD, TIP, ^IRX, ^FVX, ^TNX, ^TYX, "
+    "UUP, DX-Y.NYB, EURUSD=X, GBPUSD=X, USDJPY=X, USDCHF=X, USDCAD=X, AUDUSD=X, NZDUSD=X, EURJPY=X, GBPJPY=X, EURGBP=X, "
+    "BTC-USD, ETH-USD, SOL-USD, BNB-USD, XRP-USD, ^VIX, ^VIX3M, VXX, "
+    "AAPL, MSFT, NVDA, TSLA, AMZN, META, GOOGL, JPM, BAC, GS, XOM, CVX, "
+    "^FTSE, ^GDAXI, ^FCHI, ^N225, ^HSI, 000001.SS"
+)
+
+
+
+WATCHLIST_PRESETS = {
+    "V82 Full Institutional": DEFAULT_WATCHLIST,
+    "XAU / Macro Only": "GC=F, SI=F, GLD, SLV, GDX, GDXJ, DX-Y.NYB, UUP, EURUSD=X, GBPUSD=X, USDJPY=X, ^IRX, ^FVX, ^TNX, ^TYX, TLT, IEF, SHY, ^VIX, ^VIX3M, SPY, QQQ, ^GSPC, ^NDX, BTC-USD, CL=F, HG=F",
+    "US Risk Tape": "SPY, QQQ, DIA, IWM, ^GSPC, ^NDX, ^DJI, ^RUT, XLK, XLF, XLE, XLV, XLY, XLP, XLI, XLB, XLU, XLRE, XLC, ^VIX, ^VIX3M, TLT, HYG, LQD, UUP",
+    "Rates / FX / Gold": "GC=F, SI=F, DX-Y.NYB, UUP, EURUSD=X, GBPUSD=X, USDJPY=X, USDCHF=X, AUDUSD=X, ^IRX, ^FVX, ^TNX, ^TYX, SHY, IEF, TLT, TIP",
+    "Crypto Liquidity": "BTC-USD, ETH-USD, SOL-USD, BNB-USD, XRP-USD, SPY, QQQ, ^VIX, DX-Y.NYB, GC=F, SI=F",
+}
+
+INSTITUTIONAL_XAU_RULES = [
+    {"Layer": "Macro permission", "Bullish Read": "XAU score +4 to +10", "Bearish Read": "XAU score -4 to -10", "Why It Matters": "Confirms whether the driver basket is a tailwind or headwind for gold."},
+    {"Layer": "USD / DXY", "Bullish Read": "DXY or UUP falling", "Bearish Read": "DXY or UUP rising", "Why It Matters": "Gold is USD-priced. A stronger USD usually pressures XAUUSD."},
+    {"Layer": "US yields", "Bullish Read": "10Y/30Y yields falling", "Bearish Read": "10Y/30Y yields rising", "Why It Matters": "Higher yields raise the opportunity cost of holding gold."},
+    {"Layer": "Risk / fear", "Bullish Read": "VIX rising with stocks weak", "Bearish Read": "Risk-on without safe-haven demand", "Why It Matters": "Safe-haven demand can override USD/yield pressure."},
+    {"Layer": "Metals confirmation", "Bullish Read": "Gold and silver rising together", "Bearish Read": "Gold and silver falling together", "Why It Matters": "Precious-metal breadth reduces single-asset noise."},
+    {"Layer": "Execution", "Bullish Read": "Sell-side sweep + bullish MSS/CISD", "Bearish Read": "Buy-side sweep + bearish MSS/CISD", "Why It Matters": "The terminal gives bias, not the entry trigger."},
+]
+
+# Fallback 2026 FOMC dot-plot reference recreated from the user's CNBC screenshot.
+# V82 can read updated dots from Supabase if the database table is configured.
+FOMC_DOT_PLOT_2026_POINTS = [
+    3.875, 3.875, 3.875,
+    3.625, 3.625, 3.625, 3.625,
+    3.375, 3.375, 3.375, 3.375,
+    3.125, 3.125, 3.125, 3.125,
+    2.875, 2.875,
+    2.625,
+    2.125,
+]
+FOMC_DOT_PLOT_SOURCE = "Fallback manual reference: Federal Open Market Committee / CNBC screenshot supplied by user, data as of Dec. 10, 2025"
+
+ASSET_GROUPS = {
+    "EQUITIES / INDICES": ["SPY", "QQQ", "DIA", "IWM", "^GSPC", "^NDX", "^DJI", "^RUT"],
+    "US SECTORS": ["XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC"],
+    "MEGA CAP / SINGLE STOCKS": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "JPM", "BAC", "GS", "XOM", "CVX"],
+    "RATES / CREDIT": ["^IRX", "^FVX", "^TNX", "^TYX", "SHY", "IEF", "TLT", "TIP", "HYG", "LQD"],
+    "FX / USD": ["DX-Y.NYB", "UUP", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "USDCAD=X", "AUDUSD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X"],
+    "COMMODITIES": ["GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "GLD", "SLV", "USO", "UNG", "GDX", "GDXJ"],
+    "CRYPTO": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"],
+    "VOLATILITY": ["^VIX", "^VIX3M", "VXX"],
+    "GLOBAL INDICES": ["^FTSE", "^GDAXI", "^FCHI", "^N225", "^HSI", "000001.SS"],
+}
+
+CHART_UNIVERSE = {
+    "Core Market": ["SPY", "QQQ", "DIA", "IWM", "^GSPC", "^NDX", "^DJI", "^RUT", "^VIX"],
+    "Gold / Metals": ["GC=F", "SI=F", "GLD", "SLV", "GDX", "GDXJ", "XAUUSD=X", "XAGUSD=X"],
+    "FX": ["DX-Y.NYB", "UUP", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "USDCAD=X", "AUDUSD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X"],
+    "Rates / Bonds": ["^IRX", "^FVX", "^TNX", "^TYX", "SHY", "IEF", "TLT", "TIP", "HYG", "LQD"],
+    "Commodities": ["GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "USO", "UNG"],
+    "Mega Cap": ["AAPL", "MSFT", "NVDA", "TSLA", "AMZN", "META", "GOOGL", "JPM", "BAC", "GS", "XOM", "CVX"],
+    "US Sectors": ["XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC"],
+    "Crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"],
+    "Global Indices": ["^FTSE", "^GDAXI", "^FCHI", "^N225", "^HSI", "000001.SS"],
+}
+
+MACRO_TICKERS = {
+    "3M Yield Proxy": "^IRX",
+    "5Y Yield Proxy": "^FVX",
+    "10Y Yield Proxy": "^TNX",
+    "30Y Yield Proxy": "^TYX",
+    "US Dollar Index Proxy": "DX-Y.NYB",
+    "Dollar ETF": "UUP",
+    "Gold Futures": "GC=F",
+    "Silver Futures": "SI=F",
+    "Copper Futures": "HG=F",
+    "Crude Oil Futures": "CL=F",
+    "Natural Gas Futures": "NG=F",
+    "S&P 500": "^GSPC",
+    "Nasdaq 100": "^NDX",
+    "Dow Jones": "^DJI",
+    "Russell 2000": "^RUT",
+    "VIX": "^VIX",
+    "VIX 3M": "^VIX3M",
+    "Bitcoin": "BTC-USD",
+    "Ethereum": "ETH-USD",
+}
+
+FUNCTION_SCREENS = [
+    "MMKT <GO> Market Command Center",
+    "GP <GO> Charts",
+    "DES <GO> Security Description",
+    "RV <GO> Relative Value",
+    "XAU <GO> Gold Cockpit",
+    "RATES <GO> Yield Curve",
+    "MACRO <GO> Macro Dashboard",
+    "CN <GO> News Intelligence",
+    "ECO <GO> Economic Calendar",
+    "ALRT <GO> Alert Deck",
+    "PORT <GO> Portfolio Risk",
+    "EQSC <GO> Screener",
+    "CORR <GO> Correlation",
+    "MAP <GO> Asset Map",
+    "HELP <GO> Function Directory",
+    "DATA <GO> Data Health",
+    "WLIST <GO> Watchlists",
+    "TRD <GO> XAU Trade Checklist",
+    "DOT <GO> FOMC Dot Plot",
+    "BOT <GO> Realtime XAU Analyst",
+    "FEED <GO> Reliable Data Sources",
+    "FED <GO> SEP / Dot Monitor",
+    "NOTIFY <GO> Alert Notifications",
+    "CURVE <GO> Advanced Yield Analytics",
+    "BROKER <GO> Broker XAU Feed",
+    "BT <GO> Bot Backtest",
+    "JRN <GO> Trade Journal",
+]
+
+FUNCTION_ALIAS_TO_SCREEN = {
+    "MM": FUNCTION_SCREENS[0], "MMKT": FUNCTION_SCREENS[0], "HOME": FUNCTION_SCREENS[0], "RISK": FUNCTION_SCREENS[0],
+    "GP": FUNCTION_SCREENS[1], "CHART": FUNCTION_SCREENS[1], "G": FUNCTION_SCREENS[1],
+    "DES": FUNCTION_SCREENS[2], "SEC": FUNCTION_SCREENS[2], "QUOTE": FUNCTION_SCREENS[2],
+    "RV": FUNCTION_SCREENS[3], "RELVAL": FUNCTION_SCREENS[3], "COMPARE": FUNCTION_SCREENS[3],
+    "XAU": FUNCTION_SCREENS[4], "GOLD": FUNCTION_SCREENS[4],
+    "RATES": FUNCTION_SCREENS[5], "YC": FUNCTION_SCREENS[5], "YCRV": FUNCTION_SCREENS[5],
+    "MACRO": FUNCTION_SCREENS[6], "WEI": FUNCTION_SCREENS[6],
+    "CN": FUNCTION_SCREENS[7], "NEWS": FUNCTION_SCREENS[7], "TOP": FUNCTION_SCREENS[7],
+    "ECO": FUNCTION_SCREENS[8], "ECON": FUNCTION_SCREENS[8], "CAL": FUNCTION_SCREENS[8],
+    "ALRT": FUNCTION_SCREENS[9], "ALERT": FUNCTION_SCREENS[9], "ALERTS": FUNCTION_SCREENS[9],
+    "PORT": FUNCTION_SCREENS[10], "PORTFOLIO": FUNCTION_SCREENS[10], "RISKPORT": FUNCTION_SCREENS[10],
+    "EQSC": FUNCTION_SCREENS[11], "SCREEN": FUNCTION_SCREENS[11], "SCR": FUNCTION_SCREENS[11],
+    "CORR": FUNCTION_SCREENS[12], "CORREL": FUNCTION_SCREENS[12],
+    "MAP": FUNCTION_SCREENS[13], "ASSET": FUNCTION_SCREENS[13], "HEATMAP": FUNCTION_SCREENS[13],
+    "HELP": FUNCTION_SCREENS[14], "MENU": FUNCTION_SCREENS[14], "?": FUNCTION_SCREENS[14],
+    "DATA": FUNCTION_SCREENS[15], "HEALTH": FUNCTION_SCREENS[15], "SRC": FUNCTION_SCREENS[15], "SOURCE": FUNCTION_SCREENS[15],
+    "WLIST": FUNCTION_SCREENS[16], "WL": FUNCTION_SCREENS[16], "WATCHLIST": FUNCTION_SCREENS[16],
+    "TRD": FUNCTION_SCREENS[17], "TRADE": FUNCTION_SCREENS[17], "SETUP": FUNCTION_SCREENS[17], "CHECK": FUNCTION_SCREENS[17],
+    "DOT": FUNCTION_SCREENS[18], "FOMC": FUNCTION_SCREENS[18], "FEDDOT": FUNCTION_SCREENS[18], "DOTS": FUNCTION_SCREENS[18],
+    "BOT": FUNCTION_SCREENS[19], "RTA": FUNCTION_SCREENS[19], "REALTIME": FUNCTION_SCREENS[19], "ANALYST": FUNCTION_SCREENS[19], "XAUAI": FUNCTION_SCREENS[19],
+    "FEED": FUNCTION_SCREENS[20], "SOURCES": FUNCTION_SCREENS[20], "LIVE": FUNCTION_SCREENS[20],
+    "FED": FUNCTION_SCREENS[21], "SEP": FUNCTION_SCREENS[21], "FOMCSEP": FUNCTION_SCREENS[21],
+    "NOTIFY": FUNCTION_SCREENS[22], "NTFY": FUNCTION_SCREENS[22], "TELEGRAM": FUNCTION_SCREENS[22], "DISCORD": FUNCTION_SCREENS[22],
+    "CURVE": FUNCTION_SCREENS[23], "YC2": FUNCTION_SCREENS[23], "BREAKEVEN": FUNCTION_SCREENS[23], "REALYIELD": FUNCTION_SCREENS[23],
+    "BROKER": FUNCTION_SCREENS[24], "OANDA": FUNCTION_SCREENS[24], "MT5": FUNCTION_SCREENS[24],
+    "BT": FUNCTION_SCREENS[25], "BACKTEST": FUNCTION_SCREENS[25], "PERF": FUNCTION_SCREENS[25],
+    "JRN": FUNCTION_SCREENS[26], "JOURNAL": FUNCTION_SCREENS[26], "TRADES": FUNCTION_SCREENS[26],
+}
+
+ASSET_CLASS_MAP = {
+    "equity": ["SPY", "QQQ", "DIA", "IWM", "^GSPC", "^NDX", "^DJI", "^RUT", "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC"],
+    "rates_credit": ["^IRX", "^FVX", "^TNX", "^TYX", "SHY", "IEF", "TLT", "TIP", "HYG", "LQD"],
+    "fx": ["DX-Y.NYB", "UUP", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "USDCAD=X", "AUDUSD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X"],
+    "commodity": ["GC=F", "SI=F", "CL=F", "NG=F", "HG=F", "GLD", "SLV", "USO", "UNG", "GDX", "GDXJ"],
+    "crypto": ["BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD"],
+    "volatility": ["^VIX", "^VIX3M", "VXX"],
+}
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def safe_float(value):
+    try:
+        return float(value)
+    except Exception:
+        return np.nan
+
+
+def color_value(value):
+    try:
+        value = float(value)
+        if value > 0:
+            return "color: #00ff99"
+        if value < 0:
+            return "color: #ff4d4d"
+        return "color: #ffffff"
+    except Exception:
+        return "color: #ffffff"
+
+
+def color_impact(value):
+    value = str(value)
+    if value in ["Red", "High"]:
+        return "color: #ff4d4d; font-weight: bold"
+    if value in ["Orange", "Medium"]:
+        return "color: #ffb000; font-weight: bold"
+    if value in ["Yellow", "Low"]:
+        return "color: #ffff66; font-weight: bold"
+    return "color: #ffffff"
+
+
+def pct_class(value):
+    try:
+        value = float(value)
+        if value > 0:
+            return "positive"
+        if value < 0:
+            return "negative"
+        return "neutral"
+    except Exception:
+        return "neutral"
+
+
+def format_signed_pct(value):
+    try:
+        value = float(value)
+        sign = "+" if value > 0 else ""
+        return f"{sign}{value:.2f}%"
+    except Exception:
+        return "N/A"
+
+
+def format_number(value, decimals=2):
+    try:
+        value = float(value)
+        if abs(value) >= 1_000_000_000:
+            return f"{value/1_000_000_000:.2f}B"
+        if abs(value) >= 1_000_000:
+            return f"{value/1_000_000:.2f}M"
+        if abs(value) >= 1_000:
+            return f"{value:,.{decimals}f}"
+        return f"{value:.{decimals}f}"
+    except Exception:
+        return "N/A"
+
+
+def flatten_yfinance_columns(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
+
+
+def terminal_box(title, value, note="", css_class="neutral"):
+    st.markdown(
+        f"""
+        <div class="metric-box">
+            <div class="metric-title">{html.escape(str(title))}</div>
+            <div class="metric-value {css_class}">{html.escape(str(value))}</div>
+            <div class="metric-note">{html.escape(str(note))}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def alert_card(text, kind="warning"):
+    if kind == "good":
+        css = "good-alert-card"
+    elif kind == "danger":
+        css = "alert-card"
+    else:
+        css = "warning-alert-card"
+    st.markdown(f'<div class="{css}">{html.escape(str(text))}</div>', unsafe_allow_html=True)
+
+
+def classify_asset(ticker):
+    ticker = str(ticker).upper()
+    for cls, members in ASSET_CLASS_MAP.items():
+        if ticker in [m.upper() for m in members]:
+            return cls.replace("_", " /").title()
+    if ticker.endswith("=X"):
+        return "Fx"
+    if ticker.endswith("-USD"):
+        return "Crypto"
+    return "Single Stock / Other"
+
+
+def normalize_to_100(df):
+    clean = df.dropna(how="all").ffill().dropna()
+    if clean.empty:
+        return clean
+    first = clean.iloc[0].replace(0, np.nan)
+    return clean.divide(first).multiply(100)
+
+
+def live_sgt_clock_html(label="SGT LIVE"):
+    """Browser-side live Singapore clock.
+
+    Phone-safe version: the clock is rendered as a full-width strip instead of being
+    placed inside a Streamlit column. This prevents Streamlit's mobile column stacking
+    from pushing the clock under the command bar or cutting off its lower border.
+    """
+    return f"""
+    <style>
+        html, body {{
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background: transparent;
+        }}
+        .mm-live-clock {{
+            box-sizing: border-box;
+            width: 100%;
+            min-height: 58px;
+            background: linear-gradient(90deg, #171000, #050505 55%, #171000);
+            border: 1px solid #ffb000;
+            color: #ffb000;
+            padding: 8px 10px;
+            font-family: 'Courier New', monospace;
+            font-weight: bold;
+            line-height: 1.15;
+            display: grid;
+            grid-template-columns: 1fr auto;
+            align-items: center;
+            gap: 6px 10px;
+        }}
+        .mm-live-clock .topline {{
+            min-width: 0;
+            font-size: clamp(10px, 2.2vw, 13px);
+            letter-spacing: 0.2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }}
+        .mm-live-clock .date {{
+            color: #ffffff;
+        }}
+        .mm-live-clock .time {{
+            color: #ffffff;
+            font-size: clamp(16px, 4vw, 22px);
+            letter-spacing: 0.8px;
+            white-space: nowrap;
+            text-align: right;
+        }}
+        @media (max-width: 520px) {{
+            .mm-live-clock {{
+                grid-template-columns: 1fr;
+                min-height: 66px;
+                padding: 8px 9px;
+                gap: 3px;
+            }}
+            .mm-live-clock .topline {{
+                white-space: normal;
+                overflow: visible;
+                text-overflow: clip;
+                font-size: 11px;
+            }}
+            .mm-live-clock .time {{
+                text-align: left;
+                font-size: 20px;
+                line-height: 1.1;
+            }}
+        }}
+        @media (max-width: 330px) {{
+            .mm-live-clock {{
+                min-height: 74px;
+            }}
+            .mm-live-clock .time {{
+                font-size: 18px;
+            }}
+        }}
+    </style>
+    <div class="mm-live-clock">
+        <div class="topline"><span class="label">{html.escape(label)}</span> <span class="date" id="live-sgt-date">--</span></div>
+        <div class="time" id="live-sgt-time">--:--:--</div>
+    </div>
+    <script>
+    function updateLiveSgtClock() {{
+        const now = new Date();
+        const dateText = new Intl.DateTimeFormat('en-GB', {{
+            timeZone: 'Asia/Singapore',
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric'
+        }}).format(now).replace(',', '');
+        const timeText = new Intl.DateTimeFormat('en-GB', {{
+            timeZone: 'Asia/Singapore',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: false
+        }}).format(now);
+        const dateNode = document.getElementById('live-sgt-date');
+        const timeNode = document.getElementById('live-sgt-time');
+        if (dateNode) dateNode.textContent = dateText.toUpperCase();
+        if (timeNode) timeNode.textContent = timeText;
+    }}
+    updateLiveSgtClock();
+    setInterval(updateLiveSgtClock, 1000);
+    </script>
+    """
+
+
+# ============================================================
+# DATA FUNCTIONS
+# ============================================================
+
+@st.cache_data(ttl=MARKET_DATA_CACHE_TTL_SECONDS, show_spinner=False)
+def get_price_data(ticker, period, interval):
+    try:
+        df = yf.download(
+            ticker,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+        if df.empty:
+            return pd.DataFrame()
+        df = flatten_yfinance_columns(df)
+        return df.dropna(how="all")
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=MARKET_DATA_CACHE_TTL_SECONDS, show_spinner=False)
+def build_watchlist(tickers, period, interval):
+    rows = []
+    price_series = {}
+
+    for ticker in tickers:
+        df = get_price_data(ticker, period, interval)
+        if df.empty or "Close" not in df.columns:
+            continue
+        df = df.dropna(subset=["Close"])
+        if len(df) < 2:
+            continue
+
+        close = df["Close"].dropna()
+        last = safe_float(close.iloc[-1])
+        previous = safe_float(close.iloc[-2])
+        if np.isnan(last) or np.isnan(previous) or previous == 0:
+            continue
+
+        change = last - previous
+        change_pct = (last / previous - 1) * 100
+        five_period_pct = (last / safe_float(close.iloc[-5]) - 1) * 100 if len(close) >= 5 else np.nan
+        twenty_period_pct = (last / safe_float(close.iloc[-20]) - 1) * 100 if len(close) >= 20 else np.nan
+        returns = close.pct_change().dropna()
+        ann_vol = returns.std() * np.sqrt(252) * 100 if len(returns) > 2 else np.nan
+
+        if "Volume" in df.columns:
+            volume = df["Volume"].dropna()
+            last_volume = safe_float(volume.iloc[-1]) if not volume.empty else np.nan
+            avg_volume = safe_float(volume.tail(20).mean()) if len(volume) >= 1 else np.nan
+            volume_ratio = last_volume / avg_volume if avg_volume and not np.isnan(avg_volume) and avg_volume != 0 else np.nan
+        else:
+            last_volume = np.nan
+            avg_volume = np.nan
+            volume_ratio = np.nan
+
+        ma20 = safe_float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else np.nan
+        ma50 = safe_float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else np.nan
+        ma200 = safe_float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else np.nan
+        dist_ma20 = (last / ma20 - 1) * 100 if ma20 and not np.isnan(ma20) else np.nan
+        dist_ma50 = (last / ma50 - 1) * 100 if ma50 and not np.isnan(ma50) else np.nan
+        dist_ma200 = (last / ma200 - 1) * 100 if ma200 and not np.isnan(ma200) else np.nan
+
+        if not np.isnan(dist_ma20) and not np.isnan(dist_ma50):
+            if dist_ma20 > 0 and dist_ma50 > 0:
+                trend = "Bullish"
+            elif dist_ma20 < 0 and dist_ma50 < 0:
+                trend = "Bearish"
+            else:
+                trend = "Mixed"
+        else:
+            trend = "N/A"
+
+        rolling_high = safe_float(close.tail(20).max()) if len(close) >= 5 else np.nan
+        rolling_low = safe_float(close.tail(20).min()) if len(close) >= 5 else np.nan
+        drawdown_20 = (last / rolling_high - 1) * 100 if rolling_high and not np.isnan(rolling_high) else np.nan
+
+        rows.append({
+            "Ticker": ticker,
+            "Asset Class": classify_asset(ticker),
+            "Last": round(last, 4),
+            "Change": round(change, 4),
+            "Change %": round(change_pct, 2),
+            "5-Period %": round(five_period_pct, 2) if not np.isnan(five_period_pct) else None,
+            "20-Period %": round(twenty_period_pct, 2) if not np.isnan(twenty_period_pct) else None,
+            "Ann. Vol %": round(ann_vol, 2) if not np.isnan(ann_vol) else None,
+            "Volume Ratio": round(volume_ratio, 2) if not np.isnan(volume_ratio) else None,
+            "Dist. 20MA %": round(dist_ma20, 2) if not np.isnan(dist_ma20) else None,
+            "Dist. 50MA %": round(dist_ma50, 2) if not np.isnan(dist_ma50) else None,
+            "Dist. 200MA %": round(dist_ma200, 2) if not np.isnan(dist_ma200) else None,
+            "20P High": round(rolling_high, 4) if not np.isnan(rolling_high) else None,
+            "20P Low": round(rolling_low, 4) if not np.isnan(rolling_low) else None,
+            "20P Drawdown %": round(drawdown_20, 2) if not np.isnan(drawdown_20) else None,
+            "Trend": trend,
+            "Avg Volume": round(avg_volume, 0) if not np.isnan(avg_volume) else None,
+        })
+        price_series[ticker] = close.rename(ticker)
+
+    watchlist_df = pd.DataFrame(rows)
+    prices_df = pd.DataFrame(price_series).dropna(how="all") if price_series else pd.DataFrame()
+    return watchlist_df, prices_df
+
+
+@st.cache_data(ttl=MARKET_DATA_CACHE_TTL_SECONDS, show_spinner=False)
+def get_macro_proxy_data(macro_tickers, period, interval):
+    rows = []
+    prices = {}
+
+    for label, ticker in macro_tickers.items():
+        df = get_price_data(ticker, period, interval)
+        if df.empty or "Close" not in df.columns:
+            continue
+        df = df.dropna(subset=["Close"])
+        if len(df) < 2:
+            continue
+        close = df["Close"].dropna()
+        last_raw = safe_float(close.iloc[-1])
+        previous_raw = safe_float(close.iloc[-2])
+        if np.isnan(last_raw) or np.isnan(previous_raw) or previous_raw == 0:
+            continue
+
+        display_last = last_raw / 10 if ticker in ["^IRX", "^FVX", "^TNX", "^TYX"] else last_raw
+        display_previous = previous_raw / 10 if ticker in ["^IRX", "^FVX", "^TNX", "^TYX"] else previous_raw
+        change = display_last - display_previous
+        change_pct = (last_raw / previous_raw - 1) * 100
+        five_period_pct = (last_raw / safe_float(close.iloc[-5]) - 1) * 100 if len(close) >= 5 else np.nan
+        twenty_period_pct = (last_raw / safe_float(close.iloc[-20]) - 1) * 100 if len(close) >= 20 else np.nan
+
+        rows.append({
+            "Macro Driver": label,
+            "Ticker": ticker,
+            "Latest": round(display_last, 4),
+            "Change": round(change, 4),
+            "Change %": round(change_pct, 2),
+            "5-Period %": round(five_period_pct, 2) if not np.isnan(five_period_pct) else None,
+            "20-Period %": round(twenty_period_pct, 2) if not np.isnan(twenty_period_pct) else None,
+        })
+        prices[label] = (close / 10).rename(label) if ticker in ["^IRX", "^FVX", "^TNX", "^TYX"] else close.rename(label)
+
+    summary_df = pd.DataFrame(rows)
+    price_df = pd.DataFrame(prices).dropna(how="all") if prices else pd.DataFrame()
+    return summary_df, price_df
+
+
+@st.cache_data(ttl=NEWS_CACHE_TTL_SECONDS, show_spinner=False)
+def fetch_rss_news(max_items=120):
+    feed_urls = [
+        ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+        ("CNBC Markets", "https://www.cnbc.com/id/100003114/device/rss/rss.html"),
+        ("Google Markets", "https://news.google.com/rss/search?q=financial+markets&hl=en-US&gl=US&ceid=US:en"),
+        ("Google Fed", "https://news.google.com/rss/search?q=Federal+Reserve+markets+stocks+bonds&hl=en-US&gl=US&ceid=US:en"),
+        ("Google Economy", "https://news.google.com/rss/search?q=economy+inflation+stocks+bonds+commodities&hl=en-US&gl=US&ceid=US:en"),
+        ("Google Gold", "https://news.google.com/rss/search?q=gold+prices+dollar+yields&hl=en-US&gl=US&ceid=US:en"),
+        ("Google Oil", "https://news.google.com/rss/search?q=oil+prices+markets+inflation&hl=en-US&gl=US&ceid=US:en"),
+        ("Google Crypto", "https://news.google.com/rss/search?q=crypto+bitcoin+markets&hl=en-US&gl=US&ceid=US:en"),
+    ]
+    rows = []
+    for source, url in feed_urls:
+        try:
+            response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+            if response.status_code != 200:
+                continue
+            feed = feedparser.parse(response.content)
+            for entry in feed.entries[:20]:
+                title = entry.get("title", "")
+                link = entry.get("link", "")
+                published = entry.get("published", "")
+                if title:
+                    rows.append({"Source": source, "Published": published, "Headline": title, "Link": link})
+        except Exception:
+            continue
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return pd.DataFrame()
+    return df.drop_duplicates(subset=["Headline"]).head(max_items)
+
+
+@st.cache_data(ttl=CALENDAR_CACHE_TTL_SECONDS, show_spinner=False)
+def fetch_forexfactory_calendar():
+    url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
+    rows = []
+    try:
+        response = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if response.status_code != 200:
+            return pd.DataFrame()
+        root = ET.fromstring(response.content)
+        for event in root.findall(".//event"):
+            def get_text(tag):
+                node = event.find(tag)
+                return str(node.text).strip() if node is not None and node.text is not None else ""
+            title = get_text("title")
+            if not title:
+                continue
+            rows.append({
+                "Date": get_text("date"),
+                "Time": get_text("time"),
+                "Currency": get_text("country"),
+                "Impact": get_text("impact"),
+                "Event": title,
+                "Actual": get_text("actual"),
+                "Forecast": get_text("forecast"),
+                "Previous": get_text("previous"),
+                "URL": get_text("url"),
+            })
+    except Exception:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df["Impact"] = df["Impact"].replace({"High": "Red", "Medium": "Orange", "Low": "Yellow", "Holiday": "Low", "Non-Economic": "Low"})
+    return df
+
+
+def parse_ff_datetime_to_singapore(date_text, time_text, source_timezone="America/New_York"):
+    try:
+        if not date_text or not time_text:
+            return "", "", "N/A", pd.NaT
+        time_clean = str(time_text).strip()
+        if time_clean.lower() in ["all day", "tentative", ""]:
+            return date_text, time_clean, "N/A", pd.NaT
+        event_dt = datetime.strptime(f"{date_text} {time_clean}", "%m-%d-%Y %I:%M%p")
+        source_dt = event_dt.replace(tzinfo=ZoneInfo(source_timezone))
+        sg_dt = source_dt.astimezone(ZoneInfo("Asia/Singapore"))
+        now_sg = datetime.now(ZoneInfo("Asia/Singapore"))
+        total_minutes = int((sg_dt - now_sg).total_seconds() // 60)
+        if total_minutes < 0:
+            countdown = "Passed"
+        else:
+            countdown = f"{total_minutes // 60}h {total_minutes % 60}m"
+        return sg_dt.strftime("%Y-%m-%d"), sg_dt.strftime("%H:%M"), countdown, sg_dt
+    except Exception:
+        return date_text, time_text, "N/A", pd.NaT
+
+
+def build_forexfactory_display(df, currencies=None, impacts=None, source_timezone="America/New_York"):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    display_rows = []
+    for _, row in df.iterrows():
+        currency = str(row.get("Currency", ""))
+        impact = str(row.get("Impact", ""))
+        if currencies and currency not in currencies:
+            continue
+        if impacts and impact not in impacts:
+            continue
+        sg_date, sg_time, countdown, sg_dt = parse_ff_datetime_to_singapore(str(row.get("Date", "")), str(row.get("Time", "")), source_timezone)
+        display_rows.append({
+            "SG Date": sg_date,
+            "SG Time": sg_time,
+            "Countdown": countdown,
+            "Currency": currency,
+            "Impact": impact,
+            "Event": row.get("Event", ""),
+            "Actual": row.get("Actual", ""),
+            "Forecast": row.get("Forecast", ""),
+            "Previous": row.get("Previous", ""),
+            "Source URL": row.get("URL", ""),
+            "SG Datetime": sg_dt,
+        })
+    display_df = pd.DataFrame(display_rows)
+    if display_df.empty:
+        return display_df
+    impact_rank = {"Red": 1, "Orange": 2, "Yellow": 3, "Low": 4}
+    display_df["Impact Rank"] = display_df["Impact"].map(impact_rank).fillna(9)
+    display_df = display_df.sort_values(["SG Date", "SG Time", "Impact Rank"]).drop(columns=["Impact Rank"])
+    return display_df
+
+# ============================================================
+# ANALYTICS
+# ============================================================
+
+def parse_command(command):
+    raw = str(command or "").strip()
+    cleaned = raw.replace("<GO>", " ").replace(" GO", " ").strip()
+    parts = [p for p in cleaned.split() if p]
+    result = {
+        "raw": raw,
+        "function": "MMKT",
+        "screen": FUNCTION_SCREENS[0],
+        "ticker": None,
+        "tickers": [],
+        "keyword": "",
+        "message": "Type HELP <GO> for the function directory.",
+    }
+    if not parts:
+        return result
+
+    fn = parts[0].upper()
+    result["function"] = fn
+    result["screen"] = FUNCTION_ALIAS_TO_SCREEN.get(fn, FUNCTION_SCREENS[14])
+
+    if fn in ["GP", "CHART", "DES", "SEC", "QUOTE"] and len(parts) >= 2:
+        result["ticker"] = parts[1].upper()
+        result["tickers"] = [result["ticker"]]
+    elif fn in ["RV", "RELVAL", "COMPARE", "CORR", "CORREL"] and len(parts) >= 2:
+        result["tickers"] = [p.upper() for p in parts[1:]]
+        result["ticker"] = result["tickers"][0] if result["tickers"] else None
+    elif fn in ["NEWS", "CN", "TOP", "SCREEN", "SCR", "EQSC"]:
+        result["keyword"] = " ".join(parts[1:]).strip()
+    elif fn in ["XAU", "GOLD"]:
+        result["ticker"] = "GC=F"
+        result["tickers"] = ["GC=F", "DX-Y.NYB", "^TNX", "^VIX"]
+    elif fn == "HELP":
+        pass
+    elif fn not in FUNCTION_ALIAS_TO_SCREEN:
+        result["message"] = f"Unknown function {fn}. Try HELP <GO>."
+        return result
+
+    if result["screen"] != FUNCTION_SCREENS[14]:
+        extra = ""
+        if result["ticker"]:
+            extra = f" | ACTIVE TICKER: {result['ticker']}"
+        elif result["tickers"]:
+            extra = f" | ACTIVE SET: {', '.join(result['tickers'])}"
+        elif result["keyword"]:
+            extra = f" | FILTER: {result['keyword']}"
+        result["message"] = f"{fn} <GO> loaded{extra}."
+    return result
+
+
+def get_row_change(df, ticker):
+    if df is None or df.empty or "Ticker" not in df.columns or "Change %" not in df.columns:
+        return None
+    match = df[df["Ticker"] == ticker]
+    if match.empty:
+        return None
+    try:
+        return float(match.iloc[0]["Change %"])
+    except Exception:
+        return None
+
+
+def get_change_pct_from_tables(watchlist_df, macro_summary_df, ticker=None, label=None):
+    try:
+        if ticker and watchlist_df is not None and not watchlist_df.empty:
+            match = watchlist_df[watchlist_df["Ticker"] == ticker]
+            if not match.empty:
+                return float(match.iloc[0]["Change %"])
+        if ticker and macro_summary_df is not None and not macro_summary_df.empty:
+            match = macro_summary_df[macro_summary_df["Ticker"] == ticker]
+            if not match.empty:
+                return float(match.iloc[0]["Change %"])
+        if label and macro_summary_df is not None and not macro_summary_df.empty:
+            match = macro_summary_df[macro_summary_df["Macro Driver"] == label]
+            if not match.empty:
+                return float(match.iloc[0]["Change %"])
+    except Exception:
+        return np.nan
+    return np.nan
+
+
+def compute_risk_regime(watchlist_df, macro_summary_df):
+    score = 0
+    signals = []
+
+    def lookup(ticker):
+        value = get_row_change(watchlist_df, ticker)
+        return value if value is not None else get_row_change(macro_summary_df, ticker)
+
+    spy = lookup("SPY")
+    qqq = lookup("QQQ")
+    vix = lookup("^VIX")
+    dollar = lookup("UUP") if lookup("UUP") is not None else lookup("DX-Y.NYB")
+    btc = lookup("BTC-USD")
+    tlt = lookup("TLT")
+    oil = lookup("CL=F")
+
+    if spy is not None:
+        score += 1 if spy > 0 else -1
+        signals.append("SPY positive: equity risk appetite supportive." if spy > 0 else "SPY negative: broad equity pressure.")
+    if qqq is not None:
+        score += 1 if qqq > 0 else -1
+        signals.append("QQQ positive: growth risk appetite supportive." if qqq > 0 else "QQQ negative: growth/tech pressure.")
+    if vix is not None:
+        score += 1 if vix < 0 else -1
+        signals.append("VIX falling: fear cooling." if vix < 0 else "VIX rising: fear increasing.")
+    if dollar is not None:
+        score += 1 if dollar < 0 else -1
+        signals.append("Dollar softer: easier cross-asset conditions." if dollar < 0 else "Dollar stronger: tighter cross-asset pressure.")
+    if btc is not None:
+        score += 1 if btc > 0 else -1
+        signals.append("Bitcoin positive: speculative liquidity present." if btc > 0 else "Bitcoin negative: speculative liquidity weaker.")
+    if tlt is not None and spy is not None:
+        if spy < 0 and tlt > 0:
+            score -= 1
+            signals.append("Stocks down while TLT up: defensive bond bid.")
+        elif spy > 0 and tlt < 0:
+            score += 1
+            signals.append("Stocks up while TLT down: risk-on rotation.")
+        else:
+            signals.append("TLT signal mixed relative to equities.")
+    if oil is not None:
+        if oil > 1:
+            signals.append("Oil up strongly: inflation impulse watch.")
+        elif oil < -1:
+            signals.append("Oil down strongly: growth/inflation concern watch.")
+
+    if score >= 3:
+        return "RISK-ON", "success", score, signals
+    if score <= -3:
+        return "RISK-OFF", "danger", score, signals
+    return "MIXED / TRANSITION", "warning", score, signals
+
+
+def compute_xau_command_score(watchlist_df, macro_summary_df):
+    driver_specs = [
+        {"Driver": "Gold Futures", "Ticker": "GC=F", "Label": "Gold Futures", "Weight": 3, "Bullish When Up": True, "Logic": "Gold itself rising is direct XAU strength."},
+        {"Driver": "Silver Futures", "Ticker": "SI=F", "Label": "Silver Futures", "Weight": 1, "Bullish When Up": True, "Logic": "Silver rising confirms precious metals demand."},
+        {"Driver": "US Dollar", "Ticker": "UUP", "Label": "Dollar ETF", "Weight": 2, "Bullish When Up": False, "Logic": "A stronger USD is usually a headwind for gold."},
+        {"Driver": "DXY Proxy", "Ticker": "DX-Y.NYB", "Label": "US Dollar Index Proxy", "Weight": 2, "Bullish When Up": False, "Logic": "DXY strength usually pressures USD-priced gold."},
+        {"Driver": "10Y Yield", "Ticker": "^TNX", "Label": "10Y Yield Proxy", "Weight": 2, "Bullish When Up": False, "Logic": "Higher yields usually raise opportunity cost for gold."},
+        {"Driver": "30Y Yield", "Ticker": "^TYX", "Label": "30Y Yield Proxy", "Weight": 1, "Bullish When Up": False, "Logic": "Higher long-end yields can pressure gold."},
+        {"Driver": "VIX", "Ticker": "^VIX", "Label": "VIX", "Weight": 1, "Bullish When Up": True, "Logic": "Rising fear can create safe-haven demand for gold."},
+        {"Driver": "Nasdaq 100", "Ticker": "^NDX", "Label": "Nasdaq 100", "Weight": 1, "Bullish When Up": False, "Logic": "Strong risk appetite can reduce defensive gold demand."},
+        {"Driver": "Bitcoin", "Ticker": "BTC-USD", "Label": "Bitcoin", "Weight": 1, "Bullish When Up": True, "Logic": "Bitcoin strength can signal speculative liquidity."},
+        {"Driver": "Oil", "Ticker": "CL=F", "Label": "Crude Oil Futures", "Weight": 1, "Bullish When Up": True, "Logic": "Oil strength can support inflation-sensitive commodity demand."},
+        {"Driver": "Copper", "Ticker": "HG=F", "Label": "Copper Futures", "Weight": 1, "Bullish When Up": True, "Logic": "Copper can reflect commodity/growth impulse."},
+    ]
+    rows = []
+    total_score = 0
+    for spec in driver_specs:
+        change_pct = get_change_pct_from_tables(watchlist_df, macro_summary_df, ticker=spec["Ticker"], label=spec["Label"])
+        if np.isnan(change_pct):
+            contribution = 0
+            effect = "Missing"
+        else:
+            if change_pct > 0:
+                contribution = spec["Weight"] if spec["Bullish When Up"] else -spec["Weight"]
+            elif change_pct < 0:
+                contribution = -spec["Weight"] if spec["Bullish When Up"] else spec["Weight"]
+            else:
+                contribution = 0
+            effect = "Tailwind" if contribution > 0 else "Headwind" if contribution < 0 else "Neutral"
+        total_score += contribution
+        rows.append({
+            "Driver": spec["Driver"],
+            "Ticker": spec["Ticker"],
+            "Change %": round(change_pct, 2) if not np.isnan(change_pct) else None,
+            "Weight": spec["Weight"],
+            "Contribution": contribution,
+            "Effect on XAU": effect,
+            "Logic": spec["Logic"],
+        })
+    total_score = max(min(total_score, 10), -10)
+    if total_score >= 4:
+        bias = "BULLISH XAU TAILWIND"
+        action = "Macro supports gold. Wait for bullish price confirmation before entry."
+    elif total_score <= -4:
+        bias = "BEARISH XAU HEADWIND"
+        action = "Macro pressures gold. Wait for bearish price confirmation before entry."
+    else:
+        bias = "MIXED / WAIT"
+        action = "Macro is not clean. Wait for clearer driver alignment."
+    return total_score, bias, action, pd.DataFrame(rows)
+
+
+def build_event_risk_score(calendar_df):
+    if calendar_df is None or calendar_df.empty:
+        return 0, "NO CALENDAR DATA", pd.DataFrame()
+    active = calendar_df.copy()
+    if "Countdown" in active.columns:
+        active = active[active["Countdown"] != "Passed"]
+    score = 0
+    for _, row in active.iterrows():
+        impact = str(row.get("Impact", ""))
+        if impact == "Red":
+            score += 3
+        elif impact == "Orange":
+            score += 2
+        elif impact == "Yellow":
+            score += 1
+    if score >= 10:
+        regime = "EXTREME EVENT RISK"
+    elif score >= 6:
+        regime = "HIGH EVENT RISK"
+    elif score >= 3:
+        regime = "MODERATE EVENT RISK"
+    else:
+        regime = "LOW EVENT RISK"
+    return score, regime, active
+
+
+def get_next_high_impact_event(calendar_df):
+    if calendar_df is None or calendar_df.empty:
+        return "N/A"
+    active = calendar_df[calendar_df.get("Countdown", "") != "Passed"].copy()
+    active = active[active["Impact"].isin(["Red", "Orange"])]
+    if active.empty:
+        return "No upcoming red/orange event"
+    row = active.iloc[0]
+    return f"{row['Currency']} {row['Impact']} | {row['SG Date']} {row['SG Time']} | {row['Event']}"
+
+
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_client():
+    """Return a Supabase client when secrets/environment variables are configured."""
+    if create_client is None:
+        return None
+    try:
+        url = ""
+        key = ""
+        try:
+            url = st.secrets.get("SUPABASE_URL", "")
+            key = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY", "") or st.secrets.get("SUPABASE_ANON_KEY", "")
+        except Exception:
+            pass
+        url = url or os.getenv("SUPABASE_URL", "")
+        key = key or os.getenv("SUPABASE_SERVICE_ROLE_KEY", "") or os.getenv("SUPABASE_ANON_KEY", "")
+        if not url or not key:
+            return None
+        return create_client(url, key)
+    except Exception:
+        return None
+
+
+def supabase_is_configured():
+    return get_supabase_client() is not None
+
+
+def load_dot_plot_payload_from_supabase(target_year=SUPABASE_DOT_TARGET_YEAR):
+    """Load the latest active FOMC dot plot for a target year from Supabase.
+    Falls back to the static screenshot-derived points if Supabase is not configured.
+    """
+    client = get_supabase_client()
+    if client is None:
+        return FOMC_DOT_PLOT_2026_POINTS, FOMC_DOT_PLOT_SOURCE, None
+    try:
+        resp = (
+            client.table("fomc_dotplot_points")
+            .select("projected_rate, source, release_date, target_year, is_active")
+            .eq("target_year", int(target_year))
+            .eq("is_active", True)
+            .order("projected_rate", desc=True)
+            .execute()
+        )
+        rows = resp.data or []
+        points = [float(r.get("projected_rate")) for r in rows if r.get("projected_rate") is not None]
+        if points:
+            source = rows[0].get("source") or "Supabase fomc_dotplot_points table"
+            release_date = rows[0].get("release_date")
+            if release_date:
+                source = f"{source}, release date {release_date}"
+            return points, source, release_date
+    except Exception:
+        pass
+    return FOMC_DOT_PLOT_2026_POINTS, FOMC_DOT_PLOT_SOURCE, None
+
+
+def get_active_fomc_dot_points():
+    points, _, _ = load_dot_plot_payload_from_supabase()
+    return points
+
+
+def get_active_fomc_dot_source():
+    _, source, _ = load_dot_plot_payload_from_supabase()
+    return source
+
+def build_fomc_dot_plot_dataframe(points=None):
+    points = get_active_fomc_dot_points() if points is None else points
+    rows = []
+    grouped = {}
+    for value in points:
+        grouped.setdefault(float(value), 0)
+        grouped[float(value)] += 1
+        rows.append({
+            "Dot": len(rows) + 1,
+            "Projected Rate %": float(value),
+            "Stack Slot": grouped[float(value)],
+        })
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df["Median %"] = float(np.median(df["Projected Rate %"]))
+    return df
+
+
+def create_fomc_dot_plot_figure(points=None):
+    dot_df = build_fomc_dot_plot_dataframe(points)
+    fig = go.Figure()
+    if dot_df.empty:
+        return fig
+    fig.add_trace(go.Scatter(
+        x=dot_df["Stack Slot"],
+        y=dot_df["Projected Rate %"],
+        mode="markers",
+        marker=dict(size=24, opacity=0.95, line=dict(width=1, color="#0b0b0b")),
+        text=[f"Participant dot {i}: {v:.3f}%" for i, v in zip(dot_df["Dot"], dot_df["Projected Rate %"])],
+        hovertemplate="%{text}<extra></extra>",
+        name="FOMC dots",
+    ))
+    median_value = float(np.median(dot_df["Projected Rate %"]))
+    fig.add_hline(y=median_value, line_width=1, line_dash="dash", annotation_text=f"Median {median_value:.3f}%", annotation_position="top right")
+    fig.update_layout(
+        template="plotly_dark",
+        title="FOMC Dot Plot for 2026 — Database / Manual Reference Layer",
+        height=520,
+        paper_bgcolor="#000000",
+        plot_bgcolor="#050505",
+        font=dict(color="#f2f2f2", family="Courier New"),
+        xaxis=dict(title="Participant stack slot", showgrid=False, zeroline=False, tickmode="linear", dtick=1),
+        yaxis=dict(title="Projected policy rate (%)", range=[1.95, 4.05], dtick=0.25),
+        margin=dict(l=40, r=25, t=70, b=45),
+    )
+    return fig
+
+
+def build_fomc_dot_summary(points=None):
+    dot_df = build_fomc_dot_plot_dataframe(points)
+    if dot_df.empty:
+        return pd.DataFrame(), {}
+    median_value = float(np.median(dot_df["Projected Rate %"]))
+    mean_value = float(dot_df["Projected Rate %"].mean())
+    high_value = float(dot_df["Projected Rate %"].max())
+    low_value = float(dot_df["Projected Rate %"].min())
+    hawkish_count = int((dot_df["Projected Rate %"] >= 3.50).sum())
+    dovish_count = int((dot_df["Projected Rate %"] <= 3.00).sum())
+    counts = dot_df.groupby("Projected Rate %", as_index=False).size().rename(columns={"size": "Dots"}).sort_values("Projected Rate %", ascending=False)
+    summary = {
+        "median": median_value,
+        "mean": mean_value,
+        "high": high_value,
+        "low": low_value,
+        "hawkish_count": hawkish_count,
+        "dovish_count": dovish_count,
+        "total": len(dot_df),
+        "xau_read": "Higher-for-longer policy-rate expectations are generally a headwind for XAU because they support yields/USD and increase the opportunity cost of holding gold. A lower/revised-down dot plot would usually be more XAU-supportive."
+    }
+    return counts, summary
+
+
+def load_bot_history():
+    """Load bot history from Supabase when configured; otherwise use local JSON fallback."""
+    client = get_supabase_client()
+    if client is not None:
+        try:
+            resp = (
+                client.table("xau_bot_history")
+                .select("hour_key, generated_sgt, verdict, confidence, composite, record, generated_at")
+                .order("generated_at", desc=True)
+                .limit(int(SUPABASE_HISTORY_LIMIT))
+                .execute()
+            )
+            rows = resp.data or []
+            records = []
+            for row in reversed(rows):
+                rec = row.get("record") if isinstance(row, dict) else None
+                if isinstance(rec, dict):
+                    records.append(rec)
+            if records:
+                return records
+        except Exception:
+            pass
+    try:
+        with open(BOT_HISTORY_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, list):
+            return payload
+    except Exception:
+        pass
+    return []
+
+
+def save_bot_history(history):
+    """Save bot history to Supabase when configured; also keep a local fallback copy."""
+    clean_history = list(history or [])[-int(SUPABASE_HISTORY_LIMIT):]
+    client = get_supabase_client()
+    if client is not None and clean_history:
+        try:
+            rows = []
+            for item in clean_history[-24:]:
+                rows.append({
+                    "hour_key": str(item.get("hour_key") or item.get("generated_sgt") or datetime.now(ZoneInfo("Asia/Singapore")).isoformat()),
+                    "generated_sgt": str(item.get("generated_sgt", "")),
+                    "verdict": str(item.get("verdict", "")),
+                    "confidence": str(item.get("confidence", "")),
+                    "composite": int(item.get("composite", 0) or 0),
+                    "xau_score": int(item.get("xau_score", 0) or 0),
+                    "record": item,
+                })
+            client.table("xau_bot_history").upsert(rows, on_conflict="hour_key").execute()
+        except Exception:
+            pass
+    try:
+        with open(BOT_HISTORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(clean_history[-120:], f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def score_news_for_xau(news_df, max_headlines=20):
+    if news_df is None or news_df.empty:
+        return 0, [], "No RSS/news headlines loaded."
+    df = news_df.head(max_headlines).copy()
+    score = 0
+    chosen = []
+    for _, row in df.iterrows():
+        headline = str(row.get("Headline", ""))
+        theme, gold_read, urgency, urgency_score = tag_news_headline(headline)
+        bias_delta = 0
+        if "Headwind" in gold_read:
+            bias_delta = -2
+        elif "Tailwind" in gold_read or "Safe-Haven" in gold_read:
+            bias_delta = 2
+        elif "Volatility" in gold_read:
+            bias_delta = 0
+        if urgency == "HIGH":
+            bias_delta *= 1.5
+        score += bias_delta
+        if len(chosen) < 5 and (urgency in ["HIGH", "MEDIUM"] or bias_delta != 0):
+            chosen.append({
+                "Source": str(row.get("Source", "")),
+                "Urgency": urgency,
+                "Theme": theme,
+                "Gold Read": gold_read,
+                "Headline": headline,
+            })
+    score = int(max(min(round(score), 10), -10))
+    if score > 2:
+        read = "Headline tape leans XAU tailwind / safe-haven supportive."
+    elif score < -2:
+        read = "Headline tape leans XAU headwind / USD-yield pressure."
+    else:
+        read = "Headline tape is mixed or not strongly XAU-directional."
+    return score, chosen, read
+
+
+def get_driver_row(xau_driver_df, name_contains):
+    if xau_driver_df is None or xau_driver_df.empty:
+        return None
+    mask = xau_driver_df["Driver"].str.contains(name_contains, case=False, na=False) | xau_driver_df["Ticker"].str.contains(name_contains, case=False, na=False)
+    if not mask.any():
+        return None
+    return xau_driver_df[mask].iloc[0].to_dict()
+
+
+def fmt_driver(row):
+    if not row:
+        return "No data"
+    change = row.get("Change %")
+    contrib = row.get("Contribution")
+    effect = row.get("Effect on XAU")
+    driver = row.get("Driver")
+    change_txt = "n/a" if change is None or pd.isna(change) else f"{float(change):+.2f}%"
+    return f"{driver}: {change_txt}, contribution {contrib}, {effect}"
+
+
+def build_realtime_xau_analysis_record(watchlist_df, macro_summary_df, xau_score, xau_bias, xau_action, xau_driver_df, regime, risk_score, risk_signals, event_regime, event_score, active_events, news_df):
+    now_sg = datetime.now(ZoneInfo("Asia/Singapore"))
+    hour_key = now_sg.strftime("%Y-%m-%d %H:00")
+    news_score, important_news, news_read = score_news_for_xau(news_df)
+    _, dot_summary = build_fomc_dot_summary()
+    dot_median = float(dot_summary.get("median", np.nan)) if dot_summary else np.nan
+    dot_score = -3 if not np.isnan(dot_median) and dot_median >= 3.25 else 2
+
+    risk_xau_effect = 0
+    if regime == "RISK-OFF":
+        risk_xau_effect = 3
+    elif regime == "RISK-ON":
+        risk_xau_effect = -2
+    elif risk_score < 0:
+        risk_xau_effect = 1
+    elif risk_score > 0:
+        risk_xau_effect = -1
+
+    event_effect = 0
+    if event_regime in ["HIGH EVENT RISK", "EXTREME EVENT RISK"]:
+        event_effect = 0
+
+    composite = int(max(min(round(xau_score * 7 + news_score * 2 + risk_xau_effect * 3 + dot_score + event_effect), 100), -100))
+    if composite >= 35:
+        verdict = "BULLISH XAU"
+        card_class = "bot-card-bull"
+        action = "Prefer long setups after sell-side sweep + bullish MSS/CISD. Do not chase without structure confirmation."
+    elif composite <= -35:
+        verdict = "BEARISH XAU"
+        card_class = "bot-card-bear"
+        action = "Prefer short setups after buy-side sweep + bearish MSS/CISD. Do not short blindly into displacement without confirmation."
+    else:
+        verdict = "MIXED / WAIT"
+        card_class = "bot-card-wait"
+        action = "No clean fundamental edge. Reduce size, wait for clearer driver alignment, or demand very clean price confirmation."
+
+    confidence = "HIGH" if abs(composite) >= 65 and event_regime not in ["HIGH EVENT RISK", "EXTREME EVENT RISK"] else "MEDIUM" if abs(composite) >= 35 else "LOW"
+    if event_regime in ["HIGH EVENT RISK", "EXTREME EVENT RISK"]:
+        confidence = "LOW / EVENT-RISK OVERRIDE"
+
+    top_drivers = []
+    if xau_driver_df is not None and not xau_driver_df.empty:
+        ranked = xau_driver_df.copy()
+        ranked["Abs Contribution"] = ranked["Contribution"].abs()
+        top_drivers = ranked.sort_values("Abs Contribution", ascending=False).head(5)[["Driver", "Change %", "Contribution", "Effect on XAU", "Logic"]].to_dict("records")
+
+    lines = [
+        f"XAU driver score: {xau_score}/10 ({xau_bias}).",
+        f"USD layer: {fmt_driver(get_driver_row(xau_driver_df, 'Dollar|DXY'))}.",
+        f"Yield layer: {fmt_driver(get_driver_row(xau_driver_df, '10Y'))}; {fmt_driver(get_driver_row(xau_driver_df, '30Y'))}.",
+        f"Metals confirmation: {fmt_driver(get_driver_row(xau_driver_df, 'Gold'))}; {fmt_driver(get_driver_row(xau_driver_df, 'Silver'))}.",
+        f"Risk regime: {regime}, score {risk_score}. For gold this is {'safe-haven supportive' if risk_xau_effect > 0 else 'risk-appetite headwind' if risk_xau_effect < 0 else 'not directional'}.",
+        f"Event risk: {event_regime}, score {event_score}. High event risk reduces conviction even if direction is clear.",
+        f"News tape: {news_read}",
+        f"FOMC dot plot reference: 2026 median around {dot_median:.3f}% if unchanged; higher-for-longer dots are a structural yield headwind for XAU.",
+    ]
+
+    if active_events is not None and not active_events.empty:
+        next_events = active_events.head(3)[["SG Date", "SG Time", "Currency", "Impact", "Event"]].to_dict("records")
+    else:
+        next_events = []
+
+    return {
+        "hour_key": hour_key,
+        "generated_sgt": now_sg.strftime("%Y-%m-%d %H:%M:%S"),
+        "verdict": verdict,
+        "confidence": confidence,
+        "composite": composite,
+        "card_class": card_class,
+        "xau_score": int(xau_score),
+        "xau_bias": str(xau_bias),
+        "risk_regime": str(regime),
+        "risk_score": int(risk_score),
+        "event_regime": str(event_regime),
+        "event_score": int(event_score),
+        "news_score": int(news_score),
+        "dot_median": None if np.isnan(dot_median) else round(dot_median, 3),
+        "action": action,
+        "lines": lines,
+        "top_drivers": top_drivers,
+        "important_news": important_news,
+        "next_events": next_events,
+        "risk_signals": list(risk_signals or [])[:5],
+    }
+
+
+def update_xau_bot_history_if_needed(record):
+    if "xau_bot_history" not in st.session_state:
+        st.session_state["xau_bot_history"] = load_bot_history()
+    history = st.session_state["xau_bot_history"]
+    if not history or history[-1].get("hour_key") != record.get("hour_key"):
+        history.append(record)
+        deduped = {}
+        for item in history:
+            deduped[item.get("hour_key", item.get("generated_sgt", ""))] = item
+        history = list(deduped.values())[-120:]
+        st.session_state["xau_bot_history"] = history
+        save_bot_history(history)
+    return st.session_state["xau_bot_history"]
+
+
+def render_bot_card(record):
+    klass = html.escape(record.get("card_class", "bot-card-wait"))
+    verdict = html.escape(str(record.get("verdict", "MIXED / WAIT")))
+    confidence = html.escape(str(record.get("confidence", "LOW")))
+    generated = html.escape(str(record.get("generated_sgt", "")))
+    composite = html.escape(str(record.get("composite", "")))
+    action = html.escape(str(record.get("action", "")))
+    lines_html = "".join([f'<div class="bot-line">• {html.escape(str(line))}</div>' for line in record.get("lines", [])])
+    return f"""
+        <div class="bot-card {klass}">
+            <div class="bot-meta">Forwarded from 🏛️ Margin Manor XAU Analyst Bot • {generated} SGT</div>
+            <div class="bot-verdict">{verdict} | Confidence: {confidence} | Composite: {composite}/100</div>
+            {lines_html}
+            <div class="bot-line"><b>Conclusion:</b> {action}</div>
+        </div>
+    """
+
+
+def build_bot_history_dataframe(history):
+    if not history:
+        return pd.DataFrame()
+    rows = []
+    for item in history:
+        rows.append({
+            "Generated SGT": item.get("generated_sgt"),
+            "Hour": item.get("hour_key"),
+            "Verdict": item.get("verdict"),
+            "Confidence": item.get("confidence"),
+            "Composite": item.get("composite"),
+            "XAU Score": item.get("xau_score"),
+            "Risk": item.get("risk_regime"),
+            "Risk Score": item.get("risk_score"),
+            "Event": item.get("event_regime"),
+            "News Score": item.get("news_score"),
+            "Dot Median": item.get("dot_median"),
+        })
+    return pd.DataFrame(rows)
+
+
+def build_ticker_tape(watchlist_df):
+    if watchlist_df is None or watchlist_df.empty:
+        return ""
+    items = []
+    for _, row in watchlist_df.head(36).iterrows():
+        ticker = row.get("Ticker", "")
+        change = row.get("Change %", np.nan)
+        cls = pct_class(change)
+        items.append(f'<span class="tape-item {cls}">{html.escape(str(ticker))} {format_signed_pct(change)}</span>')
+    tape = "".join(items) * 2
+    return f'<div class="tape-container"><div class="tape">{tape}</div></div>'
+
+
+def create_candlestick_chart(df, ticker, height=520):
+    fig = go.Figure()
+    if df is None or df.empty:
+        return fig
+    fig.add_trace(go.Candlestick(x=df.index, open=df["Open"], high=df["High"], low=df["Low"], close=df["Close"], name=ticker))
+    if len(df) >= 20:
+        fig.add_trace(go.Scatter(x=df.index, y=df["Close"].rolling(20).mean(), mode="lines", name="20 MA"))
+    if len(df) >= 50:
+        fig.add_trace(go.Scatter(x=df.index, y=df["Close"].rolling(50).mean(), mode="lines", name="50 MA"))
+    if len(df) >= 200:
+        fig.add_trace(go.Scatter(x=df.index, y=df["Close"].rolling(200).mean(), mode="lines", name="200 MA"))
+    fig.update_layout(
+        template="plotly_dark",
+        title=f"GP <GO> {ticker}",
+        height=height,
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=15, r=15, t=40, b=15),
+        paper_bgcolor="#000000",
+        plot_bgcolor="#050505",
+        font=dict(color="#f2f2f2", family="Courier New"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+@st.cache_data(ttl=MARKET_DATA_CACHE_TTL_SECONDS, show_spinner=False)
+def build_synthetic_gold_crosses(period, interval):
+    required = {
+        "Gold/USD Proxy": "GC=F",
+        "Silver/USD Proxy": "SI=F",
+        "EURUSD": "EURUSD=X",
+        "GBPUSD": "GBPUSD=X",
+        "USDJPY": "USDJPY=X",
+        "USDCHF": "USDCHF=X",
+        "AUDUSD": "AUDUSD=X",
+    }
+    closes = {}
+    for label, ticker in required.items():
+        df = get_price_data(ticker, period, interval)
+        if not df.empty and "Close" in df.columns:
+            closes[label] = df["Close"].dropna().rename(label)
+    if not closes:
+        return pd.DataFrame(), pd.DataFrame()
+    source_df = pd.DataFrame(closes).ffill().dropna()
+    if source_df.empty or "Gold/USD Proxy" not in source_df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+    synthetic = pd.DataFrame(index=source_df.index)
+    synthetic["XAUUSD Proxy"] = source_df["Gold/USD Proxy"]
+    if "EURUSD" in source_df.columns:
+        synthetic["XAUEUR Proxy"] = source_df["Gold/USD Proxy"] / source_df["EURUSD"]
+    if "GBPUSD" in source_df.columns:
+        synthetic["XAUGBP Proxy"] = source_df["Gold/USD Proxy"] / source_df["GBPUSD"]
+    if "USDJPY" in source_df.columns:
+        synthetic["XAUJPY Proxy"] = source_df["Gold/USD Proxy"] * source_df["USDJPY"]
+    if "USDCHF" in source_df.columns:
+        synthetic["XAUCHF Proxy"] = source_df["Gold/USD Proxy"] * source_df["USDCHF"]
+    if "AUDUSD" in source_df.columns:
+        synthetic["XAUAUD Proxy"] = source_df["Gold/USD Proxy"] / source_df["AUDUSD"]
+    if "Silver/USD Proxy" in source_df.columns:
+        synthetic["XAGUSD Proxy"] = source_df["Silver/USD Proxy"]
+
+    rows = []
+    for col in synthetic.columns:
+        s = synthetic[col].dropna()
+        if len(s) < 2:
+            continue
+        last = float(s.iloc[-1])
+        previous = float(s.iloc[-2])
+        change = last - previous
+        change_pct = (last / previous - 1) * 100 if previous != 0 else np.nan
+        rows.append({"Synthetic Asset": col, "Latest": round(last, 4), "Change": round(change, 4), "Change %": round(change_pct, 2)})
+    return pd.DataFrame(rows), synthetic
+
+
+def build_screener_tables(watchlist_df):
+    if watchlist_df is None or watchlist_df.empty:
+        return {}
+    df = watchlist_df.copy()
+    numeric_cols = ["Change %", "Ann. Vol %", "Volume Ratio", "Dist. 20MA %", "Dist. 50MA %", "Dist. 200MA %", "20P Drawdown %"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return {
+        "Top Gainers": df.sort_values("Change %", ascending=False).head(15),
+        "Top Losers": df.sort_values("Change %", ascending=True).head(15),
+        "Highest Volatility": df.sort_values("Ann. Vol %", ascending=False).head(15),
+        "Volume Expansion": df.sort_values("Volume Ratio", ascending=False).head(15),
+        "Above 20MA": df[df["Dist. 20MA %"] > 0].sort_values("Dist. 20MA %", ascending=False).head(15),
+        "Below 20MA": df[df["Dist. 20MA %"] < 0].sort_values("Dist. 20MA %", ascending=True).head(15),
+        "Deepest 20P Drawdown": df.sort_values("20P Drawdown %", ascending=True).head(15),
+    }
+
+
+def build_security_snapshot(ticker, period, interval, benchmark_tickers=None):
+    ticker = str(ticker or "SPY").upper()
+    df = get_price_data(ticker, period, interval)
+    if df.empty or "Close" not in df.columns:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), df
+    close = df["Close"].dropna()
+    last = safe_float(close.iloc[-1]) if len(close) else np.nan
+    prev = safe_float(close.iloc[-2]) if len(close) >= 2 else np.nan
+    ret1 = (last / prev - 1) * 100 if prev and not np.isnan(prev) else np.nan
+    ret5 = (last / safe_float(close.iloc[-5]) - 1) * 100 if len(close) >= 5 else np.nan
+    ret20 = (last / safe_float(close.iloc[-20]) - 1) * 100 if len(close) >= 20 else np.nan
+    ret60 = (last / safe_float(close.iloc[-60]) - 1) * 100 if len(close) >= 60 else np.nan
+    high20 = safe_float(close.tail(20).max()) if len(close) >= 20 else np.nan
+    low20 = safe_float(close.tail(20).min()) if len(close) >= 20 else np.nan
+    ma20 = safe_float(close.rolling(20).mean().iloc[-1]) if len(close) >= 20 else np.nan
+    ma50 = safe_float(close.rolling(50).mean().iloc[-1]) if len(close) >= 50 else np.nan
+    ma200 = safe_float(close.rolling(200).mean().iloc[-1]) if len(close) >= 200 else np.nan
+    returns = close.pct_change().dropna()
+    realized_vol = returns.std() * np.sqrt(252) * 100 if len(returns) > 2 else np.nan
+    snapshot = pd.DataFrame([
+        {"Field": "Ticker", "Value": ticker},
+        {"Field": "Asset Class", "Value": classify_asset(ticker)},
+        {"Field": "Last", "Value": format_number(last, 4)},
+        {"Field": "Last Candle %", "Value": format_signed_pct(ret1)},
+        {"Field": "5-Period %", "Value": format_signed_pct(ret5)},
+        {"Field": "20-Period %", "Value": format_signed_pct(ret20)},
+        {"Field": "60-Period %", "Value": format_signed_pct(ret60)},
+        {"Field": "Realized Vol %", "Value": format_number(realized_vol)},
+        {"Field": "20P High", "Value": format_number(high20, 4)},
+        {"Field": "20P Low", "Value": format_number(low20, 4)},
+        {"Field": "Dist. 20MA", "Value": format_signed_pct((last / ma20 - 1) * 100 if ma20 and not np.isnan(ma20) else np.nan)},
+        {"Field": "Dist. 50MA", "Value": format_signed_pct((last / ma50 - 1) * 100 if ma50 and not np.isnan(ma50) else np.nan)},
+        {"Field": "Dist. 200MA", "Value": format_signed_pct((last / ma200 - 1) * 100 if ma200 and not np.isnan(ma200) else np.nan)},
+    ])
+    technical = pd.DataFrame([
+        {"Signal": "Above 20MA", "State": "YES" if last > ma20 else "NO" if not np.isnan(ma20) else "N/A"},
+        {"Signal": "Above 50MA", "State": "YES" if last > ma50 else "NO" if not np.isnan(ma50) else "N/A"},
+        {"Signal": "Above 200MA", "State": "YES" if last > ma200 else "NO" if not np.isnan(ma200) else "N/A"},
+        {"Signal": "Near 20P High", "State": "YES" if high20 and not np.isnan(high20) and last >= high20 * 0.99 else "NO"},
+        {"Signal": "Near 20P Low", "State": "YES" if low20 and not np.isnan(low20) and last <= low20 * 1.01 else "NO"},
+    ])
+    if benchmark_tickers is None:
+        benchmark_tickers = ["SPY", "QQQ", "DX-Y.NYB", "^TNX", "^VIX", "GC=F", "BTC-USD"]
+    corr_rows = []
+    base = close.rename(ticker)
+    for bench in benchmark_tickers:
+        if bench == ticker:
+            continue
+        bdf = get_price_data(bench, period, interval)
+        if bdf.empty or "Close" not in bdf.columns:
+            continue
+        joined = pd.concat([base, bdf["Close"].rename(bench)], axis=1).dropna()
+        if joined.shape[0] >= 5:
+            corr = joined.pct_change().dropna().corr().iloc[0, 1]
+            corr_rows.append({"Against": bench, "Return Correlation": round(float(corr), 3)})
+    return snapshot, technical, pd.DataFrame(corr_rows), df
+
+
+def build_relative_value(tickers, period, interval):
+    tickers = [str(t).upper() for t in tickers if str(t).strip()]
+    if len(tickers) < 2:
+        tickers = ["GC=F", "DX-Y.NYB", "^TNX", "^VIX"]
+    series = {}
+    for ticker in tickers:
+        df = get_price_data(ticker, period, interval)
+        if not df.empty and "Close" in df.columns:
+            series[ticker] = df["Close"].dropna().rename(ticker)
+    prices = pd.DataFrame(series).ffill().dropna()
+    norm = normalize_to_100(prices)
+    returns = prices.pct_change().dropna() if not prices.empty else pd.DataFrame()
+    corr = returns.corr() if returns.shape[1] >= 2 else pd.DataFrame()
+    spread_df = pd.DataFrame()
+    zscore = np.nan
+    if prices.shape[1] >= 2:
+        a, b = prices.columns[:2]
+        ratio = prices[a] / prices[b].replace(0, np.nan)
+        z = (ratio - ratio.rolling(20).mean()) / ratio.rolling(20).std()
+        spread_df = pd.DataFrame({f"{a}/{b} Ratio": ratio, "20P Z-Score": z}).dropna()
+        if not spread_df.empty:
+            zscore = safe_float(spread_df["20P Z-Score"].iloc[-1])
+    return prices, norm, corr, spread_df, zscore
+
+
+def tag_news_headline(headline):
+    text = str(headline).lower()
+    tags = []
+    urgency = 1
+    gold_bias = "Neutral"
+    if any(k in text for k in ["fed", "federal reserve", "powell", "rate", "yields", "treasury"]):
+        tags.append("Rates/Fed")
+        urgency += 2
+    if any(k in text for k in ["inflation", "cpi", "pce", "ppi"]):
+        tags.append("Inflation")
+        urgency += 2
+        gold_bias = "Volatility Risk"
+    if any(k in text for k in ["dollar", "dxy", "usd"]):
+        tags.append("USD")
+        urgency += 1
+    if any(k in text for k in ["gold", "bullion", "xau"]):
+        tags.append("Gold")
+        urgency += 2
+    if any(k in text for k in ["war", "attack", "geopolitical", "israel", "iran", "ukraine", "russia", "conflict"]):
+        tags.append("Geopolitics")
+        urgency += 3
+        gold_bias = "Gold Safe-Haven Risk"
+    if any(k in text for k in ["oil", "opec", "crude"]):
+        tags.append("Oil/Inflation")
+        urgency += 1
+    if any(k in text for k in ["stocks", "nasdaq", "s&p", "equities", "selloff", "rally"]):
+        tags.append("Equities")
+    if any(k in text for k in ["bitcoin", "crypto"]):
+        tags.append("Crypto")
+    if any(k in text for k in ["recession", "jobs", "payrolls", "unemployment", "growth", "gdp", "pmi"]):
+        tags.append("Growth/Labor")
+        urgency += 1
+    if not tags:
+        tags = ["General Markets"]
+    if "dollar rises" in text or "yields rise" in text or "rates higher" in text:
+        gold_bias = "Gold Headwind"
+    if "dollar falls" in text or "yields fall" in text or "safe haven" in text:
+        gold_bias = "Gold Tailwind"
+    urgency_label = "HIGH" if urgency >= 5 else "MEDIUM" if urgency >= 3 else "LOW"
+    return ", ".join(tags), gold_bias, urgency_label, urgency
+
+
+def build_news_intelligence(news_df, keyword=""):
+    if news_df is None or news_df.empty:
+        return pd.DataFrame()
+    df = news_df.copy()
+    if keyword:
+        mask = df["Headline"].str.contains(keyword, case=False, na=False) | df["Source"].str.contains(keyword, case=False, na=False)
+        df = df[mask]
+    if df.empty:
+        return df
+    tagged = df["Headline"].apply(tag_news_headline)
+    df["Theme"], df["Gold Read"], df["Urgency"], df["Urgency Score"] = zip(*tagged)
+    return df.sort_values(["Urgency Score"], ascending=False)
+
+
+def build_institutional_alerts(watchlist_df, macro_summary_df, xau_score=None, event_regime=None):
+    alerts = []
+
+    def lookup(ticker):
+        value = get_row_change(watchlist_df, ticker)
+        return value if value is not None else get_row_change(macro_summary_df, ticker)
+
+    spy = lookup("SPY")
+    qqq = lookup("QQQ")
+    vix = lookup("^VIX")
+    dxy = lookup("DX-Y.NYB")
+    dollar = lookup("UUP") if lookup("UUP") is not None else dxy
+    gold = lookup("GC=F") if lookup("GC=F") is not None else lookup("GLD")
+    ten_y = lookup("^TNX")
+    thirty_y = lookup("^TYX")
+    oil = lookup("CL=F")
+    btc = lookup("BTC-USD")
+    tlt = lookup("TLT")
+
+    if vix is not None and vix > 3:
+        alerts.append(("danger", f"VIX spike {vix:.2f}%: fear impulse is rising."))
+    if spy is not None and vix is not None and spy < -1 and vix > 0:
+        alerts.append(("danger", "SPY falling while VIX rising: defensive risk-off pressure."))
+    if qqq is not None and vix is not None and qqq > 1 and vix < 0:
+        alerts.append(("good", "QQQ strong while VIX falls: clean risk-on tape."))
+    if dollar is not None and gold is not None and dollar > 0.35 and gold < 0:
+        alerts.append(("danger", "Dollar strength + gold weakness: bearish XAU macro squeeze."))
+    if dxy is not None and ten_y is not None and gold is not None and dxy > 0 and ten_y > 0 and gold < 0:
+        alerts.append(("danger", "DXY up + 10Y up + gold down: classic XAU headwind alignment."))
+    if dxy is not None and ten_y is not None and gold is not None and dxy > 0 and ten_y > 0 and gold > 0:
+        alerts.append(("warning", "Gold rising despite DXY/yields rising: correlation break, possible safe-haven or flow-driven move."))
+    if vix is not None and gold is not None and spy is not None and vix > 0 and gold > 0 and spy < 0:
+        alerts.append(("good", "Gold up + VIX up + stocks down: safe-haven impulse detected."))
+    if oil is not None and abs(oil) > 2:
+        alerts.append(("warning", f"Oil move >2%: inflation/growth repricing risk. Oil change: {oil:.2f}%."))
+    if btc is not None and abs(btc) > 3:
+        alerts.append(("warning", f"Bitcoin move >3%: speculative liquidity impulse. BTC change: {btc:.2f}%."))
+    if tlt is not None and abs(tlt) > 1.2:
+        alerts.append(("warning", f"TLT sharp move: bond/rates repricing. TLT change: {tlt:.2f}%."))
+    if xau_score is not None:
+        if xau_score >= 7:
+            alerts.append(("good", f"XAU score {xau_score}/10: strong bullish macro tailwind."))
+        elif xau_score <= -7:
+            alerts.append(("danger", f"XAU score {xau_score}/10: strong bearish macro headwind."))
+        elif -3 <= xau_score <= 3:
+            alerts.append(("warning", f"XAU score {xau_score}/10: macro is mixed; avoid forcing direction."))
+    if event_regime in ["HIGH EVENT RISK", "EXTREME EVENT RISK"]:
+        alerts.append(("danger", f"{event_regime}: reduce conviction around red/orange news windows."))
+
+    if watchlist_df is not None and not watchlist_df.empty and "Volume Ratio" in watchlist_df.columns:
+        vol = watchlist_df[pd.to_numeric(watchlist_df["Volume Ratio"], errors="coerce") >= 2]
+        for _, row in vol.head(5).iterrows():
+            alerts.append(("warning", f"{row['Ticker']} volume spike: {row['Volume Ratio']}x normal."))
+
+    if not alerts:
+        alerts.append(("good", "No major institutional alerts detected."))
+    return alerts
+
+
+
+
+def build_data_health_report(tickers, watchlist_df, macro_summary_df):
+    rows = []
+    loaded = set(watchlist_df["Ticker"].astype(str).str.upper()) if watchlist_df is not None and not watchlist_df.empty and "Ticker" in watchlist_df.columns else set()
+    for ticker in tickers:
+        t = str(ticker).upper().strip()
+        status = "OK" if t in loaded else "MISSING / DELAYED"
+        row = {"Ticker": t, "Source": "yfinance / Yahoo proxy", "Status": status, "Last": None, "Change %": None, "Notes": "Loaded in watchlist table." if status == "OK" else "No latest row returned. Check symbol, interval, market hours, or API limits."}
+        if status == "OK":
+            match = watchlist_df[watchlist_df["Ticker"].astype(str).str.upper() == t].iloc[0]
+            row["Last"] = match.get("Last")
+            row["Change %"] = match.get("Change %")
+        rows.append(row)
+    macro_rows = []
+    if macro_summary_df is not None and not macro_summary_df.empty:
+        for _, row in macro_summary_df.iterrows():
+            macro_rows.append({
+                "Macro Driver": row.get("Macro Driver"),
+                "Ticker": row.get("Ticker"),
+                "Source": "yfinance / Yahoo proxy",
+                "Status": "OK" if pd.notna(row.get("Latest")) else "MISSING / DELAYED",
+                "Latest": row.get("Latest"),
+                "Change %": row.get("Change %"),
+            })
+    return pd.DataFrame(rows), pd.DataFrame(macro_rows)
+
+
+def build_xau_driver_explainer(xau_driver_df):
+    if xau_driver_df is None or xau_driver_df.empty:
+        return pd.DataFrame()
+    rows = []
+    for _, row in xau_driver_df.iterrows():
+        contribution = safe_float(row.get("Contribution", 0))
+        if contribution > 0:
+            read = "Tailwind: this driver is currently supporting XAU."
+            action = "Only useful for a buy if price confirms bullish displacement."
+        elif contribution < 0:
+            read = "Headwind: this driver is currently pressuring XAU."
+            action = "Only useful for a sell if price confirms bearish displacement."
+        else:
+            read = "Neutral or missing: this driver is not giving a clean directional vote."
+            action = "Do not force direction from this driver."
+        rows.append({
+            "Driver": row.get("Driver"),
+            "Ticker": row.get("Ticker"),
+            "Move %": row.get("Change %"),
+            "Weight": row.get("Weight"),
+            "Contribution": contribution,
+            "Read": read,
+            "Trading Meaning": action,
+            "Model Logic": row.get("Logic"),
+        })
+    return pd.DataFrame(rows)
+
+
+def build_xau_macro_correlations(period, interval):
+    mapping = {
+        "Gold": "GC=F",
+        "Silver": "SI=F",
+        "DXY": "DX-Y.NYB",
+        "10Y Yield": "^TNX",
+        "30Y Yield": "^TYX",
+        "VIX": "^VIX",
+        "S&P 500": "^GSPC",
+        "Nasdaq 100": "^NDX",
+        "Bitcoin": "BTC-USD",
+        "Oil": "CL=F",
+        "Copper": "HG=F",
+    }
+    series = {}
+    for label, ticker in mapping.items():
+        df = get_price_data(ticker, period, interval)
+        if not df.empty and "Close" in df.columns:
+            series[label] = df["Close"].dropna().rename(label)
+    prices = pd.DataFrame(series).ffill().dropna()
+    if prices.empty or "Gold" not in prices.columns or prices.shape[1] < 2:
+        return pd.DataFrame(), prices, pd.DataFrame()
+    returns = prices.pct_change().dropna()
+    if returns.empty:
+        return pd.DataFrame(), prices, pd.DataFrame()
+    corr = returns.corr()
+    rows = []
+    for col in corr.columns:
+        if col == "Gold":
+            continue
+        c = safe_float(corr.loc["Gold", col])
+        if np.isnan(c):
+            continue
+        if c >= 0.35:
+            read = "Moves with gold"
+        elif c <= -0.35:
+            read = "Moves opposite gold"
+        else:
+            read = "Weak / unstable relationship"
+        rows.append({"Driver": col, "Correlation vs Gold": round(c, 3), "Read": read})
+    sensitivity = pd.DataFrame(rows).sort_values("Correlation vs Gold", ascending=True)
+    return corr, prices, sensitivity
+
+
+def build_curve_regime_table(macro_summary_df):
+    if macro_summary_df is None or macro_summary_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    def latest(label):
+        match = macro_summary_df[macro_summary_df["Macro Driver"] == label]
+        return safe_float(match.iloc[0]["Latest"]) if not match.empty else np.nan
+    vals = {
+        "3M": latest("3M Yield Proxy"),
+        "5Y": latest("5Y Yield Proxy"),
+        "10Y": latest("10Y Yield Proxy"),
+        "30Y": latest("30Y Yield Proxy"),
+    }
+    spreads = []
+    for name, a, b in [("10Y-3M", "10Y", "3M"), ("10Y-5Y", "10Y", "5Y"), ("30Y-10Y", "30Y", "10Y")]:
+        if not np.isnan(vals.get(a, np.nan)) and not np.isnan(vals.get(b, np.nan)):
+            val = vals[a] - vals[b]
+            if val < 0:
+                read = "Inverted / restrictive"
+            elif val > 0.75:
+                read = "Steep / term premium"
+            else:
+                read = "Flat / transition"
+            spreads.append({"Curve Spread": name, "Value": round(val, 4), "Read": read})
+    guide = pd.DataFrame([
+        {"Rates Condition": "Yields rising + DXY rising", "XAU Read": "Bearish headwind unless safe-haven demand overwhelms."},
+        {"Rates Condition": "Yields falling + DXY falling", "XAU Read": "Bullish tailwind for gold."},
+        {"Rates Condition": "Curve inversion deepening", "XAU Read": "Growth stress risk; can become safe-haven supportive."},
+        {"Rates Condition": "Long-end steepening", "XAU Read": "Inflation/fiscal repricing; gold reaction depends on real yields and USD."},
+    ])
+    return pd.DataFrame(spreads), guide
+
+
+def build_event_reliability_summary(display_df):
+    if display_df is None or display_df.empty:
+        return pd.DataFrame([{"Check": "Calendar status", "Status": "EMPTY", "Meaning": "No events loaded or filters removed all rows."}])
+    future = display_df[display_df.get("Countdown", "") != "Passed"].copy()
+    red = len(future[future["Impact"] == "Red"]) if "Impact" in future.columns else 0
+    orange = len(future[future["Impact"] == "Orange"]) if "Impact" in future.columns else 0
+    next_event = get_next_high_impact_event(display_df)
+    return pd.DataFrame([
+        {"Check": "Calendar feed", "Status": "OK", "Meaning": f"{len(display_df)} filtered rows loaded."},
+        {"Check": "Future red events", "Status": red, "Meaning": "Highest volatility-risk events still ahead."},
+        {"Check": "Future orange events", "Status": orange, "Meaning": "Medium volatility-risk events still ahead."},
+        {"Check": "Next high-impact event", "Status": next_event, "Meaning": "Use this to avoid entering directly into news."},
+    ])
+
+
+def score_trade_checklist(direction, macro_ok, event_ok, dxy_yields_ok, crosses_ok, price_confirmed, cycle_ok, rr_ok):
+    items = [
+        ("Macro bias aligned", macro_ok, 2),
+        ("Event risk controlled", event_ok, 2),
+        ("DXY/yields agree", dxy_yields_ok, 1),
+        ("XAU cross confirmation", crosses_ok, 1),
+        ("Price confirmation", price_confirmed, 3),
+        ("Cycle/session timing", cycle_ok, 1),
+        ("R:R and invalidation defined", rr_ok, 1),
+    ]
+    rows = []
+    score = 0
+    max_score = sum(w for _, _, w in items)
+    for name, state, weight in items:
+        if state:
+            score += weight
+        rows.append({"Checklist Item": name, "State": "PASS" if state else "WAIT", "Weight": weight})
+    if price_confirmed and score >= 9:
+        decision = f"HIGH QUALITY {direction} SETUP"
+    elif score >= 7:
+        decision = f"{direction} BIAS VALID — WAIT FOR FINAL CONFIRMATION"
+    else:
+        decision = "WAIT / LOW CONVICTION"
+    return score, max_score, decision, pd.DataFrame(rows)
+
+
+def render_browser_beep(enabled, alert_count):
+    if not enabled or alert_count <= 0:
+        return
+    components.html(
+        f"""
+        <script>
+        const key = 'mm_v80_beep_' + new Date().toISOString().slice(0,16);
+        if (!sessionStorage.getItem(key)) {{
+            sessionStorage.setItem(key, '1');
+            try {{
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = 880;
+                gain.gain.value = 0.04;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.start();
+                setTimeout(() => {{ osc.stop(); ctx.close(); }}, 180);
+            }} catch(e) {{}}
+        }}
+        </script>
+        """,
+        height=0,
+    )
+
+
+def calculate_portfolio(portfolio_df, watchlist_df):
+    if portfolio_df is None or portfolio_df.empty:
+        return pd.DataFrame()
+    results = []
+    for _, row in portfolio_df.iterrows():
+        ticker = str(row.get("Ticker", "")).upper().strip()
+        if not ticker:
+            continue
+        side = str(row.get("Side", "Long"))
+        quantity = safe_float(row.get("Quantity", 0))
+        entry = safe_float(row.get("Entry Price", 0))
+        stop = safe_float(row.get("Stop Loss", np.nan))
+        target = safe_float(row.get("Target", np.nan))
+        if np.isnan(quantity) or np.isnan(entry) or entry == 0:
+            continue
+        current = np.nan
+        if watchlist_df is not None and not watchlist_df.empty:
+            match = watchlist_df[watchlist_df["Ticker"] == ticker]
+            if not match.empty:
+                current = safe_float(match.iloc[0]["Last"])
+        if np.isnan(current):
+            df = get_price_data(ticker, "5d", "1d")
+            if not df.empty and "Close" in df.columns:
+                current = safe_float(df["Close"].dropna().iloc[-1])
+        if np.isnan(current):
+            continue
+        is_short = side.lower() == "short"
+        pnl = (entry - current) * quantity if is_short else (current - entry) * quantity
+        pnl_pct = (entry / current - 1) * 100 if is_short and current else (current / entry - 1) * 100 if entry else np.nan
+        market_value = abs(quantity * current)
+        risk_to_stop = np.nan
+        reward_to_target = np.nan
+        rr = np.nan
+        if not np.isnan(stop):
+            risk_to_stop = (stop - current) * quantity if is_short else (current - stop) * quantity
+            risk_to_stop = abs(risk_to_stop)
+        if not np.isnan(target):
+            reward_to_target = (current - target) * quantity if is_short else (target - current) * quantity
+            reward_to_target = max(reward_to_target, 0)
+        if not np.isnan(risk_to_stop) and risk_to_stop != 0 and not np.isnan(reward_to_target):
+            rr = reward_to_target / risk_to_stop
+        results.append({
+            "Ticker": ticker,
+            "Asset Class": classify_asset(ticker),
+            "Side": side,
+            "Quantity": quantity,
+            "Entry Price": round(entry, 4),
+            "Current Price": round(current, 4),
+            "Market Value": round(market_value, 2),
+            "PnL": round(pnl, 2),
+            "PnL %": round(pnl_pct, 2) if not np.isnan(pnl_pct) else None,
+            "Stop Loss": round(stop, 4) if not np.isnan(stop) else None,
+            "Target": round(target, 4) if not np.isnan(target) else None,
+            "Risk To Stop": round(risk_to_stop, 2) if not np.isnan(risk_to_stop) else None,
+            "Reward To Target": round(reward_to_target, 2) if not np.isnan(reward_to_target) else None,
+            "Live R:R": round(rr, 2) if not np.isnan(rr) else None,
+        })
+    return pd.DataFrame(results)
+
+
+def build_portfolio_risk_tables(portfolio_result):
+    if portfolio_result is None or portfolio_result.empty:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    by_class = portfolio_result.groupby("Asset Class", as_index=False).agg({"Market Value": "sum", "PnL": "sum", "Risk To Stop": "sum"})
+    total_mv = by_class["Market Value"].sum()
+    by_class["Exposure %"] = by_class["Market Value"] / total_mv * 100 if total_mv else np.nan
+    concentration = portfolio_result.sort_values("Market Value", ascending=False).head(10)
+    shock_rows = []
+    for shock_pct in [-3, -2, -1, 1, 2, 3]:
+        shock_pnl = 0
+        for _, row in portfolio_result.iterrows():
+            direction = -1 if str(row["Side"]).lower() == "short" else 1
+            shock_pnl += row["Market Value"] * (shock_pct / 100) * direction
+        shock_rows.append({"Uniform Price Shock": f"{shock_pct:+.0f}%", "Estimated PnL Impact": round(shock_pnl, 2)})
+    return by_class, concentration, pd.DataFrame(shock_rows)
+
+# ============================================================
+# SIDEBAR AND DATA LOAD
+# ============================================================
+
+st.sidebar.markdown("## MARGIN MANOR V82")
+st.sidebar.caption("Bloomberg-style command center using free/delayed data.")
+
+st.sidebar.markdown("### Watchlist / Layout")
+watchlist_preset = st.sidebar.selectbox("Watchlist preset", list(WATCHLIST_PRESETS.keys()), index=0)
+uploaded_watchlist = st.sidebar.file_uploader("Upload saved watchlist JSON", type=["json"])
+watchlist_default = WATCHLIST_PRESETS[watchlist_preset]
+if uploaded_watchlist is not None:
+    try:
+        uploaded_payload = json.loads(uploaded_watchlist.getvalue().decode("utf-8"))
+        watchlist_default = uploaded_payload.get("watchlist", watchlist_default)
+        st.sidebar.success("Uploaded watchlist loaded.")
+    except Exception:
+        st.sidebar.warning("Could not read uploaded watchlist JSON.")
+watchlist_input = st.sidebar.text_area("Watchlist tickers", value=watchlist_default, height=150)
+tickers = [ticker.strip().upper() for ticker in watchlist_input.split(",") if ticker.strip()]
+watchlist_payload = json.dumps({"name": watchlist_preset, "watchlist": watchlist_input, "saved_sgt": datetime.now(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M:%S")}, indent=2).encode("utf-8")
+st.sidebar.download_button("Download current watchlist JSON", data=watchlist_payload, file_name="margin_manor_watchlist.json", mime="application/json")
+
+period = st.sidebar.selectbox("Market data period", ["5d", "1mo", "3mo", "6mo", "1y", "2y", "5y"], index=3)
+interval = st.sidebar.selectbox("Market data interval", ["1d", "1h", "30m", "15m", "5m", "2m", "1m"], index=0)
+chart_group = st.sidebar.selectbox("Chart asset group", list(CHART_UNIVERSE.keys()))
+selected_chart_ticker = st.sidebar.selectbox("Main chart ticker", CHART_UNIVERSE[chart_group], index=0)
+
+st.sidebar.markdown("### Alert Thresholds")
+alert_beep_enabled = st.sidebar.checkbox("Beep on danger alerts", value=False)
+custom_xau_alert_level = st.sidebar.slider("XAU extreme alert threshold", min_value=4, max_value=10, value=7)
+custom_vix_alert_level = st.sidebar.slider("VIX spike alert %", min_value=1.0, max_value=10.0, value=3.0, step=0.5)
+
+st.sidebar.markdown("### Realtime XAU Bot")
+bot_background_enabled = st.sidebar.checkbox("Run hourly XAU analysis bot", value=True)
+bot_history_limit = st.sidebar.slider("Bot history hours shown", min_value=6, max_value=72, value=24, step=6)
+
+st.sidebar.markdown("---")
+manual_screen = st.sidebar.selectbox("Manual function screen", FUNCTION_SCREENS, index=0)
+sidebar_news_filter = st.sidebar.text_input("News filter", value="")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Auto-refresh")
+auto_refresh_enabled = st.sidebar.checkbox("Auto-refresh terminal", value=True)
+auto_refresh_seconds = st.sidebar.number_input(
+    "Page refresh interval, seconds",
+    min_value=10,
+    max_value=300,
+    value=DEFAULT_AUTO_REFRESH_SECONDS,
+    step=5,
+    help="This reruns the Streamlit app automatically. Market/news data still obeys cache TTL so free APIs are not spammed.",
+)
+show_live_seconds_clock = st.sidebar.checkbox("Show live seconds clock", value=True)
+
+if auto_refresh_enabled:
+    refresh_ms = int(auto_refresh_seconds) * 1000
+    if st_autorefresh is not None:
+        st_autorefresh(interval=refresh_ms, limit=None, key="margin_manor_v75_auto_refresh")
+    else:
+        # Fallback if streamlit-autorefresh is not installed.
+        # This still removes the need to refresh manually, but installing streamlit-autorefresh is smoother.
+        components.html(
+            f"""
+            <script>
+            setTimeout(function() {{
+                window.parent.location.reload();
+            }}, {refresh_ms});
+            </script>
+            """,
+            height=0,
+        )
+        st.sidebar.warning("For smoother auto-refresh, install: streamlit-autorefresh")
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"Auto-refresh: {'ON' if auto_refresh_enabled else 'OFF'} every {int(auto_refresh_seconds)}s")
+st.sidebar.caption(f"Market cache TTL: {MARKET_DATA_CACHE_TTL_SECONDS}s | News TTL: {NEWS_CACHE_TTL_SECONDS}s")
+st.sidebar.caption("Data mode: FREE / DELAYED / RESEARCH")
+st.sidebar.caption("Not an execution platform. Not investment advice.")
+
+with st.spinner("Loading terminal data..."):
+    watchlist_df, prices_df = build_watchlist(tickers, period, interval)
+    macro_summary_df, macro_price_df = get_macro_proxy_data(MACRO_TICKERS, period, interval)
+
+# ============================================================
+# HEADER / COMMAND ROUTER
+# ============================================================
+
+st.markdown("# MARGIN MANOR TERMINAL V82")
+st.markdown('<div class="terminal-subtitle">Function-code workflow | Cross-asset monitor | XAU cockpit | Alerts | Data health | Hosted bot | Broker feed | Journal</div>', unsafe_allow_html=True)
+
+if not watchlist_df.empty:
+    st.markdown(build_ticker_tape(watchlist_df), unsafe_allow_html=True)
+
+# Phone-safe clock + command layout.
+# Important: do not place the clock inside st.columns(). Streamlit stacks columns on
+# narrow screens, which makes the clock jump below the command bar and can clip its border.
+if show_live_seconds_clock:
+    components.html(live_sgt_clock_html("SGT LIVE"), height=82)
+else:
+    st.markdown(
+        f"""
+        <div class="function-bar">SGT {datetime.now(ZoneInfo('Asia/Singapore')).strftime('%d %b %Y %H:%M:%S')}</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+command = st.text_input(
+    "Command",
+    placeholder="Examples: XAU <GO> | BOT <GO> | CURVE <GO> | BROKER <GO> | BT <GO> | JRN <GO> | FED <GO> | NOTIFY <GO> | HELP <GO>",
+    label_visibility="collapsed",
+)
+
+command_info = parse_command(command)
+active_screen = command_info["screen"] if command.strip() else manual_screen
+active_ticker = command_info["ticker"] or selected_chart_ticker
+active_tickers = command_info["tickers"] if command_info["tickers"] else [active_ticker]
+news_filter = command_info["keyword"] if command_info["keyword"] else sidebar_news_filter
+
+st.markdown(
+    f"""
+    <div class="function-bar">
+        ACTIVE: {html.escape(active_screen)} | RESPONSE: {html.escape(command_info['message'])}
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Core scores used by multiple pages
+regime, regime_class, risk_score, risk_signals = compute_risk_regime(watchlist_df, macro_summary_df)
+xau_score, xau_bias, xau_action, xau_driver_df = compute_xau_command_score(watchlist_df, macro_summary_df)
+
+# Optional calendar load only for ECO/XAU/ALRT/PORT home context
+ff_display_df = pd.DataFrame()
+event_score, event_regime, active_events = 0, "NO CALENDAR DATA", pd.DataFrame()
+if bot_background_enabled or active_screen in [FUNCTION_SCREENS[0], FUNCTION_SCREENS[4], FUNCTION_SCREENS[8], FUNCTION_SCREENS[9], FUNCTION_SCREENS[15], FUNCTION_SCREENS[17], FUNCTION_SCREENS[19]]:
+    ff_raw_df = fetch_forexfactory_calendar()
+    ff_display_df = build_forexfactory_display(
+        ff_raw_df,
+        currencies=["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "CNY"],
+        impacts=["Red", "Orange"],
+        source_timezone="America/New_York",
+    )
+    event_score, event_regime, active_events = build_event_risk_score(ff_display_df)
+
+# Realtime XAU Analyst Bot updates once per hour while the app is open/rerunning.
+bot_news_df = pd.DataFrame()
+bot_record = None
+if bot_background_enabled or active_screen == FUNCTION_SCREENS[19]:
+    bot_news_df = build_news_intelligence(fetch_rss_news(max_items=80), "")
+    bot_record = build_realtime_xau_analysis_record(
+        watchlist_df, macro_summary_df, xau_score, xau_bias, xau_action, xau_driver_df,
+        regime, risk_score, risk_signals, event_regime, event_score, active_events, bot_news_df
+    )
+    update_xau_bot_history_if_needed(bot_record)
+
+institutional_alerts = build_institutional_alerts(watchlist_df, macro_summary_df, xau_score=xau_score, event_regime=event_regime)
+# User-configurable alert overlays
+if abs(xau_score) >= custom_xau_alert_level:
+    institutional_alerts.insert(0, ("danger" if xau_score < 0 else "good", f"CUSTOM XAU EXTREME: score {xau_score}/10 crossed your threshold {custom_xau_alert_level}."))
+vix_change_for_alert = get_change_pct_from_tables(watchlist_df, macro_summary_df, ticker="^VIX", label="VIX")
+if not np.isnan(vix_change_for_alert) and vix_change_for_alert >= custom_vix_alert_level:
+    institutional_alerts.insert(0, ("danger", f"CUSTOM VIX ALERT: VIX change {vix_change_for_alert:.2f}% crossed your {custom_vix_alert_level:.1f}% threshold."))
+render_browser_beep(alert_beep_enabled, sum(1 for kind, _ in institutional_alerts if kind == "danger"))
+
+# ============================================================
+# PAGE RENDERERS
+# ============================================================
+
+def page_home():
+    st.markdown("## MMKT <GO> MARKET COMMAND CENTER")
+    if watchlist_df.empty:
+        st.warning("No market data loaded. Check tickers, interval, or connection.")
+        return
+
+    top_gainer = watchlist_df.sort_values("Change %", ascending=False).iloc[0]
+    top_loser = watchlist_df.sort_values("Change %", ascending=True).iloc[0]
+    highest_vol = watchlist_df.sort_values("Ann. Vol %", ascending=False).iloc[0]
+    avg_move = pd.to_numeric(watchlist_df["Change %"], errors="coerce").mean()
+    score_class = "positive" if xau_score > 0 else "negative" if xau_score < 0 else "neutral"
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    with m1: terminal_box("Top Gainer", top_gainer["Ticker"], format_signed_pct(top_gainer["Change %"]), "positive")
+    with m2: terminal_box("Top Loser", top_loser["Ticker"], format_signed_pct(top_loser["Change %"]), "negative")
+    with m3: terminal_box("High Vol", highest_vol["Ticker"], f"{highest_vol['Ann. Vol %']}% Ann. Vol", "neutral")
+    with m4: terminal_box("Risk Regime", regime, f"Score {risk_score} | Avg {format_signed_pct(avg_move)}", regime_class)
+    with m5: terminal_box("XAU Score", f"{xau_score}/10", xau_bias, score_class)
+    with m6: terminal_box("Event Risk", event_regime, f"Score {event_score} | {get_next_high_impact_event(ff_display_df)}", "negative" if event_regime in ["HIGH EVENT RISK", "EXTREME EVENT RISK"] else "neutral")
+
+    left, mid, right = st.columns([1.15, 1.7, 1.05])
+    with left:
+        st.markdown('<div class="terminal-panel"><div class="terminal-panel-title">RISK ENGINE SIGNALS</div>', unsafe_allow_html=True)
+        for signal in risk_signals[:8]:
+            st.markdown(f'<div class="terminal-small">• {html.escape(signal)}</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("### MARKET WATCHLIST")
+        display_cols = ["Ticker", "Last", "Change %", "5-Period %", "20-Period %", "Ann. Vol %", "Trend"]
+        st.dataframe(watchlist_df[display_cols].style.map(color_value, subset=["Change %", "5-Period %", "20-Period %"]), use_container_width=True, height=445)
+
+    with mid:
+        chart_df = get_price_data(active_ticker, period, interval)
+        if chart_df.empty:
+            st.warning(f"No chart data available for {active_ticker}.")
+        else:
+            st.plotly_chart(create_candlestick_chart(chart_df, active_ticker, height=515), use_container_width=True)
+        st.markdown("### MACRO STRIP")
+        if not macro_summary_df.empty:
+            macro_cols = ["Macro Driver", "Ticker", "Latest", "Change", "Change %", "5-Period %"]
+            st.dataframe(macro_summary_df[macro_cols].style.map(color_value, subset=["Change", "Change %", "5-Period %"]), use_container_width=True, height=260)
+
+    with right:
+        st.markdown("### ALERT DECK")
+        for kind, txt in institutional_alerts[:9]:
+            alert_card(txt, kind)
+        st.markdown("### TOP NEWS INTEL")
+        news_df = build_news_intelligence(fetch_rss_news(), news_filter).head(8)
+        if news_df.empty:
+            st.caption("No news loaded or no matching news filter.")
+        else:
+            for _, row in news_df.iterrows():
+                st.markdown(
+                    f"""
+                    <div class="news-card">
+                        <div class="news-source">{html.escape(str(row['Source']))} | {html.escape(str(row.get('Urgency','')))} | {html.escape(str(row.get('Theme','')))}</div>
+                        <div class="news-title">{html.escape(str(row['Headline']))}</div>
+                        <div class="terminal-small">Gold read: {html.escape(str(row.get('Gold Read','Neutral')))}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+
+def page_chart():
+    st.markdown(f"## GP <GO> PRICE GRAPH: {active_ticker}")
+    df = get_price_data(active_ticker, period, interval)
+    if df.empty:
+        st.warning(f"No chart data available for {active_ticker}.")
+        return
+    st.plotly_chart(create_candlestick_chart(df, active_ticker, height=650), use_container_width=True)
+    close = df["Close"].dropna()
+    cols = st.columns(6)
+    values = [
+        ("Last", format_number(close.iloc[-1], 4), "neutral"),
+        ("1P", format_signed_pct((close.iloc[-1] / close.iloc[-2] - 1) * 100 if len(close) >= 2 else np.nan), pct_class((close.iloc[-1] / close.iloc[-2] - 1) * 100 if len(close) >= 2 else np.nan)),
+        ("5P", format_signed_pct((close.iloc[-1] / close.iloc[-5] - 1) * 100 if len(close) >= 5 else np.nan), pct_class((close.iloc[-1] / close.iloc[-5] - 1) * 100 if len(close) >= 5 else np.nan)),
+        ("20P", format_signed_pct((close.iloc[-1] / close.iloc[-20] - 1) * 100 if len(close) >= 20 else np.nan), pct_class((close.iloc[-1] / close.iloc[-20] - 1) * 100 if len(close) >= 20 else np.nan)),
+        ("20P High", format_number(close.tail(20).max(), 4) if len(close) >= 20 else "N/A", "neutral"),
+        ("20P Low", format_number(close.tail(20).min(), 4) if len(close) >= 20 else "N/A", "neutral"),
+    ]
+    for col, (title, value, css) in zip(cols, values):
+        with col:
+            terminal_box(title, value, "", css)
+
+
+def page_security():
+    st.markdown(f"## DES <GO> SECURITY DESCRIPTION: {active_ticker}")
+    snapshot, technical, corr, df = build_security_snapshot(active_ticker, period, interval)
+    if df.empty:
+        st.warning(f"No security data available for {active_ticker}.")
+        return
+    left, mid, right = st.columns([1, 1.6, 1])
+    with left:
+        st.markdown("### SECURITY MASTER")
+        st.dataframe(snapshot, use_container_width=True, height=430)
+        st.markdown("### TECHNICAL STATE")
+        st.dataframe(technical, use_container_width=True, height=220)
+    with mid:
+        st.plotly_chart(create_candlestick_chart(df, active_ticker, height=610), use_container_width=True)
+    with right:
+        st.markdown("### CROSS-ASSET CORRELATION")
+        if corr.empty:
+            st.caption("Not enough data for correlation.")
+        else:
+            st.dataframe(corr.style.map(color_value, subset=["Return Correlation"]), use_container_width=True, height=270)
+        st.markdown("### RELATED NEWS")
+        news_key = active_ticker.replace("=X", "").replace("=F", "").replace("^", "")
+        news_df = build_news_intelligence(fetch_rss_news(), news_key).head(8)
+        if news_df.empty:
+            news_df = build_news_intelligence(fetch_rss_news(), "").head(5)
+        for _, row in news_df.iterrows():
+            st.markdown(
+                f"""
+                <div class="news-card">
+                    <div class="news-source">{html.escape(str(row['Source']))} | {html.escape(str(row.get('Theme','')))}</div>
+                    <div class="news-title">{html.escape(str(row['Headline']))}</div>
+                    <a href="{html.escape(str(row['Link']))}" target="_blank">Open story</a>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def page_relative_value():
+    st.markdown("## RV <GO> RELATIVE VALUE")
+    tick_input_default = " ".join(active_tickers) if len(active_tickers) >= 2 else "GC=F DX-Y.NYB ^TNX ^VIX"
+    tick_input = st.text_input("RV ticker set", value=tick_input_default, help="Example: GC=F DX-Y.NYB ^TNX ^VIX")
+    rv_tickers = [x.upper() for x in tick_input.replace(",", " ").split() if x.strip()]
+    prices, norm, corr, spread_df, zscore = build_relative_value(rv_tickers, period, interval)
+    if prices.empty or norm.empty:
+        st.warning("Not enough valid data for relative value.")
+        return
+    rv1, rv2, rv3 = st.columns(3)
+    with rv1: terminal_box("RV Set", ", ".join(prices.columns[:4]), "Normalized to 100", "neutral")
+    with rv2: terminal_box("Pair Z-Score", format_number(zscore), "First ticker / second ticker 20P z-score", "positive" if zscore > 1 else "negative" if zscore < -1 else "neutral")
+    with rv3: terminal_box("Signal", "Rich" if zscore > 1.5 else "Cheap" if zscore < -1.5 else "Neutral", "Based on pair ratio z-score", "negative" if abs(zscore) > 1.5 else "neutral")
+    fig = px.line(norm, x=norm.index, y=norm.columns, title="RV Normalized Performance: 100 = first visible point")
+    fig.update_layout(template="plotly_dark", height=520, paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2", family="Courier New"), margin=dict(l=15, r=15, t=45, b=15))
+    st.plotly_chart(fig, use_container_width=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### RETURN CORRELATION")
+        if corr.empty:
+            st.caption("Correlation unavailable.")
+        else:
+            fig_corr = px.imshow(corr, text_auto=True, aspect="auto", title="RV Return Correlation")
+            fig_corr.update_layout(template="plotly_dark", height=430, paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2"))
+            st.plotly_chart(fig_corr, use_container_width=True)
+    with c2:
+        st.markdown("### PAIR SPREAD / Z-SCORE")
+        if spread_df.empty:
+            st.caption("Need at least two valid tickers.")
+        else:
+            fig_spread = px.line(spread_df, x=spread_df.index, y=spread_df.columns, title="Pair Ratio and 20P Z-Score")
+            fig_spread.update_layout(template="plotly_dark", height=430, paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2"))
+            st.plotly_chart(fig_spread, use_container_width=True)
+
+
+def page_xau():
+    st.markdown("## XAU <GO> GOLD / XAUUSD INSTITUTIONAL COCKPIT")
+    score_class = "positive" if xau_score > 0 else "negative" if xau_score < 0 else "neutral"
+    top_driver = "N/A"
+    if not xau_driver_df.empty:
+        ranked = xau_driver_df.copy()
+        ranked["Abs Contribution"] = ranked["Contribution"].abs()
+        if not ranked.empty:
+            r = ranked.sort_values("Abs Contribution", ascending=False).iloc[0]
+            top_driver = f"{r['Driver']} / {r['Effect on XAU']}"
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1: terminal_box("XAU Score", f"{xau_score}/10", "Positive = tailwind | Negative = headwind", score_class)
+    with k2: terminal_box("XAU Bias", xau_bias, "Macro-based, not entry signal", score_class)
+    with k3: terminal_box("Top Driver", top_driver, "Largest weighted contribution", "neutral")
+    with k4: terminal_box("Event Risk", event_regime, f"Score {event_score}", "negative" if event_regime in ["HIGH EVENT RISK", "EXTREME EVENT RISK"] else "neutral")
+    with k5: terminal_box("Action", "WAIT CONFIRM" if abs(xau_score) >= 4 else "WAIT", xau_action, score_class)
+
+    left, center, right = st.columns([1.25, 1.55, 1])
+    with left:
+        st.markdown("### XAU DRIVER MATRIX")
+        if xau_driver_df.empty:
+            st.warning("XAU driver data unavailable.")
+        else:
+            st.dataframe(xau_driver_df.style.map(color_value, subset=["Change %", "Contribution"]), use_container_width=True, height=515)
+    with center:
+        st.markdown("### GOLD CHART")
+        gold_df = get_price_data("GC=F", period, interval)
+        if gold_df.empty:
+            st.warning("Gold futures data unavailable.")
+        else:
+            st.plotly_chart(create_candlestick_chart(gold_df, "GC=F", height=500), use_container_width=True)
+        st.markdown("### GOLD CROSS MAP")
+        cross_summary, cross_prices = build_synthetic_gold_crosses(period, interval)
+        if cross_summary.empty:
+            st.warning("Synthetic cross data unavailable.")
+        else:
+            st.dataframe(cross_summary.style.map(color_value, subset=["Change", "Change %"]), use_container_width=True, height=230)
+    with right:
+        st.markdown("### XAU ALERTS")
+        for kind, txt in institutional_alerts[:8]:
+            alert_card(txt, kind)
+        st.markdown("### TRADE CHECKLIST")
+        checklist = pd.DataFrame([
+            {"Condition": "Macro score aligned", "State": "YES" if abs(xau_score) >= 4 else "NO"},
+            {"Condition": "Red/orange event risk controlled", "State": "NO" if event_regime in ["HIGH EVENT RISK", "EXTREME EVENT RISK"] else "YES"},
+            {"Condition": "Wait for price confirmation", "State": "ALWAYS"},
+            {"Condition": "DXY/yield agreement checked", "State": "YES"},
+            {"Condition": "XAU crosses confirmation", "State": "CHECK XAUEUR/XAUGBP/XAG"},
+            {"Condition": "Invalidation level defined", "State": "MANUAL"},
+        ])
+        st.dataframe(checklist, use_container_width=True, height=250)
+
+    st.markdown("### XAU MACRO DRIVER EXPLAINER")
+    explainer = build_xau_driver_explainer(xau_driver_df)
+    if explainer.empty:
+        st.caption("No driver explainer available.")
+    else:
+        st.dataframe(explainer.style.map(color_value, subset=["Move %", "Contribution"]), use_container_width=True, height=360)
+
+    st.markdown("### GOLD CORRELATION / SENSITIVITY MAP")
+    corr, corr_prices, sensitivity = build_xau_macro_correlations(period, interval)
+    if sensitivity.empty:
+        st.caption("Not enough data for gold correlation map.")
+    else:
+        c1, c2 = st.columns([1, 1.25])
+        with c1:
+            st.dataframe(sensitivity.style.map(color_value, subset=["Correlation vs Gold"]), use_container_width=True, height=320)
+        with c2:
+            fig_corr = px.imshow(corr, text_auto=True, aspect="auto", title="Gold Macro Correlation Matrix")
+            fig_corr.update_layout(template="plotly_dark", height=320, paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2"))
+            st.plotly_chart(fig_corr, use_container_width=True)
+
+    st.markdown("### INSTITUTIONAL XAU PLAYBOOK RULES")
+    st.dataframe(pd.DataFrame(INSTITUTIONAL_XAU_RULES), use_container_width=True, height=280)
+
+
+def page_rates():
+    st.markdown("## RATES <GO> YIELD CURVE")
+    required_curve = ["3M Yield Proxy", "5Y Yield Proxy", "10Y Yield Proxy", "30Y Yield Proxy"]
+    curve_rows = []
+    for label in required_curve:
+        match = macro_summary_df[macro_summary_df["Macro Driver"] == label] if not macro_summary_df.empty else pd.DataFrame()
+        if not match.empty:
+            curve_rows.append({"Maturity": label.replace(" Yield Proxy", ""), "Yield %": safe_float(match.iloc[0]["Latest"]), "Change": safe_float(match.iloc[0]["Change"])})
+    curve_df = pd.DataFrame(curve_rows)
+    if curve_df.empty:
+        st.warning("Yield data unavailable.")
+        return
+    c1, c2 = st.columns([1.55, 1])
+    with c1:
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=curve_df["Maturity"], y=curve_df["Yield %"], mode="lines+markers", name="Yield Curve"))
+        fig.update_layout(template="plotly_dark", height=510, title="US Yield Curve Proxy", yaxis_title="Yield %", paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2"))
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.markdown("### CURVE TABLE")
+        st.dataframe(curve_df.style.map(color_value, subset=["Change"]), use_container_width=True, height=220)
+        cv = dict(zip(curve_df["Maturity"], curve_df["Yield %"]))
+        spreads = []
+        for name, a, b in [("10Y - 3M", "10Y", "3M"), ("10Y - 5Y", "10Y", "5Y"), ("30Y - 10Y", "30Y", "10Y")]:
+            if a in cv and b in cv:
+                spreads.append({"Spread": name, "Value": round(cv[a] - cv[b], 4)})
+        st.markdown("### CURVE SPREADS")
+        st.dataframe(pd.DataFrame(spreads).style.map(color_value, subset=["Value"]), use_container_width=True, height=170)
+        st.markdown("### RATES READ")
+        st.dataframe(pd.DataFrame([
+            {"Condition": "Bear steepening", "Meaning": "Long yields rise; inflation/fiscal concern."},
+            {"Condition": "Bull steepening", "Meaning": "Front-end falls; easing/growth slowdown."},
+            {"Condition": "Flattening", "Meaning": "Policy tightening or long-end growth concern."},
+            {"Condition": "Inversion", "Meaning": "Short yields above long yields; tightening/recession risk."},
+        ]), use_container_width=True, height=230)
+    spreads, rates_guide = build_curve_regime_table(macro_summary_df)
+    st.markdown("### INSTITUTIONAL CURVE REGIME / XAU READ")
+    r1, r2 = st.columns(2)
+    with r1:
+        if spreads.empty:
+            st.caption("Curve spread table unavailable.")
+        else:
+            st.dataframe(spreads.style.map(color_value, subset=["Value"]), use_container_width=True, height=220)
+    with r2:
+        st.dataframe(rates_guide, use_container_width=True, height=220)
+
+
+def page_macro():
+    st.markdown("## MACRO <GO> MACRO DASHBOARD")
+    if macro_summary_df.empty:
+        st.warning("Macro proxy data unavailable.")
+        return
+    st.caption("Free-data proxy dashboard. For institutional-grade macro, connect paid/official feeds later.")
+    st.dataframe(macro_summary_df.style.map(color_value, subset=["Change", "Change %", "5-Period %", "20-Period %"]), use_container_width=True, height=360)
+    macro_choice = st.selectbox("Macro driver chart", macro_summary_df["Macro Driver"].tolist())
+    if not macro_price_df.empty and macro_choice in macro_price_df.columns:
+        fig = px.line(macro_price_df[[macro_choice]].dropna(), x=macro_price_df[[macro_choice]].dropna().index, y=macro_choice, title=f"{macro_choice} Proxy")
+        fig.update_layout(template="plotly_dark", height=500, paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2"))
+        st.plotly_chart(fig, use_container_width=True)
+    st.markdown("### INSTITUTIONAL MACRO MAP")
+    guide = pd.DataFrame([
+        {"Driver": "Yields", "Institutional Read": "Discount rate and opportunity cost. Higher yields usually pressure gold and duration assets."},
+        {"Driver": "USD/DXY", "Institutional Read": "Global funding pressure. Strong USD often pressures commodities and EM risk."},
+        {"Driver": "VIX", "Institutional Read": "Fear/hedging demand. Rising VIX can support safe-haven gold but hurt risk assets."},
+        {"Driver": "Oil/Copper", "Institutional Read": "Inflation and growth impulse. Oil = inflation shock; copper = global growth sensitivity."},
+        {"Driver": "SPX/NDX/BTC", "Institutional Read": "Risk appetite and liquidity proxies."},
+    ])
+    st.dataframe(guide, use_container_width=True, height=245)
+    st.markdown("### GOLD MACRO SENSITIVITY")
+    corr, corr_prices, sensitivity = build_xau_macro_correlations(period, interval)
+    if sensitivity.empty:
+        st.caption("Gold sensitivity map unavailable for the selected period/interval.")
+    else:
+        st.dataframe(sensitivity.style.map(color_value, subset=["Correlation vs Gold"]), use_container_width=True, height=260)
+
+
+def page_news():
+    st.markdown("## CN <GO> NEWS INTELLIGENCE")
+    refresh = st.button("Refresh RSS News")
+    if refresh:
+        fetch_rss_news.clear()
+    news_df = build_news_intelligence(fetch_rss_news(), news_filter)
+    if news_df.empty:
+        st.warning("No news loaded or no matching filter.")
+        return
+    n1, n2, n3 = st.columns(3)
+    with n1: terminal_box("News Items", len(news_df), f"Filter: {news_filter or 'ALL'}", "neutral")
+    with n2: terminal_box("High Urgency", len(news_df[news_df["Urgency"] == "HIGH"]), "Tagged by keyword logic", "negative" if len(news_df[news_df["Urgency"] == "HIGH"]) else "neutral")
+    with n3: terminal_box("Gold-Relevant", len(news_df[news_df["Theme"].str.contains("Gold|Fed|Rates|Inflation|USD|Geopolitics", na=False)]), "XAU-sensitive themes", "neutral")
+    st.dataframe(news_df[["Source", "Published", "Urgency", "Theme", "Gold Read", "Headline"]].head(60), use_container_width=True, height=520)
+    st.markdown("### NEWS CARDS")
+    for _, row in news_df.head(20).iterrows():
+        st.markdown(
+            f"""
+            <div class="news-card">
+                <div class="news-source">{html.escape(str(row['Source']))} | {html.escape(str(row['Urgency']))} | {html.escape(str(row['Theme']))}</div>
+                <div class="news-title">{html.escape(str(row['Headline']))}</div>
+                <div class="terminal-small">Gold read: {html.escape(str(row['Gold Read']))}</div>
+                <a href="{html.escape(str(row['Link']))}" target="_blank">Open story</a>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
+def page_econ():
+    st.markdown("## ECO <GO> ECONOMIC CALENDAR")
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        currencies = st.multiselect("Currencies", ["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "CNY"], default=["USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "CNY"])
+    with f2:
+        impacts = st.multiselect("Impact", ["Red", "Orange", "Yellow", "Low"], default=["Red", "Orange"])
+    with f3:
+        source_timezone = st.selectbox("Source timezone", ["America/New_York", "Asia/Singapore", "UTC"], index=0)
+    with f4:
+        if st.button("Refresh Calendar"):
+            fetch_forexfactory_calendar.clear()
+    raw = fetch_forexfactory_calendar()
+    display = build_forexfactory_display(raw, currencies=currencies, impacts=impacts, source_timezone=source_timezone)
+    score, reg, active = build_event_risk_score(display)
+    k1, k2, k3 = st.columns(3)
+    with k1: terminal_box("Event Risk", reg, "Upcoming filtered events", "negative" if reg in ["HIGH EVENT RISK", "EXTREME EVENT RISK"] else "neutral")
+    with k2: terminal_box("Event Score", score, "Red 3 | Orange 2 | Yellow 1", "neutral")
+    with k3: terminal_box("Next Event", get_next_high_impact_event(display), "Singapore time", "neutral")
+    st.markdown("### CALENDAR FEED RELIABILITY / EVENT CONTROL")
+    st.dataframe(build_event_reliability_summary(display), use_container_width=True, height=170)
+    if display.empty:
+        st.warning("Calendar could not be loaded or no events match your filters.")
+        return
+    cols = ["SG Date", "SG Time", "Countdown", "Currency", "Impact", "Event", "Actual", "Forecast", "Previous"]
+    st.dataframe(display[cols].style.map(color_impact, subset=["Impact"]), use_container_width=True, height=540)
+    csv_data = display.drop(columns=["SG Datetime"], errors="ignore").to_csv(index=False).encode("utf-8")
+    st.download_button("Download Calendar CSV", data=csv_data, file_name="margin_manor_economic_calendar.csv", mime="text/csv")
+
+
+def page_alerts():
+    st.markdown("## ALRT <GO> INSTITUTIONAL ALERT DECK")
+    a1, a2, a3 = st.columns(3)
+    with a1: terminal_box("Danger Alerts", sum(1 for k, _ in institutional_alerts if k == "danger"), "Beep optional in sidebar", "negative" if any(k == "danger" for k, _ in institutional_alerts) else "neutral")
+    with a2: terminal_box("XAU Threshold", custom_xau_alert_level, "Sidebar configurable", "neutral")
+    with a3: terminal_box("VIX Threshold", f"{custom_vix_alert_level:.1f}%", "Sidebar configurable", "neutral")
+    for kind, txt in institutional_alerts:
+        alert_card(txt, kind)
+    st.markdown("### ALERT LOGIC")
+    logic = pd.DataFrame([
+        {"Alert": "DXY up + 10Y up + gold down", "Meaning": "Classic bearish macro pressure for XAU."},
+        {"Alert": "Gold up despite DXY/yields up", "Meaning": "Correlation break; possible safe-haven or positioning flow."},
+        {"Alert": "Gold up + VIX up + stocks down", "Meaning": "Safe-haven impulse."},
+        {"Alert": "High event risk", "Meaning": "Red/orange calendar density is high; beware fake moves."},
+        {"Alert": "Volume spike", "Meaning": "Participation above normal; move may be institutional or news-driven."},
+        {"Alert": "Custom XAU/VIX thresholds", "Meaning": "User-defined alert layers from the sidebar."},
+    ])
+    st.dataframe(logic, use_container_width=True, height=300)
+
+
+def page_portfolio():
+    st.markdown("## PORT <GO> PORTFOLIO / RISK MONITOR")
+    st.caption("Manual portfolio tracker. This does not send orders.")
+    if "portfolio_input_v75" not in st.session_state:
+        st.session_state["portfolio_input_v75"] = pd.DataFrame([
+            {"Ticker": "GC=F", "Side": "Long", "Quantity": 1, "Entry Price": 2300.00, "Stop Loss": 2270.00, "Target": 2420.00},
+            {"Ticker": "TLT", "Side": "Long", "Quantity": 1, "Entry Price": 90.00, "Stop Loss": 87.50, "Target": 100.00},
+            {"Ticker": "QQQ", "Side": "Long", "Quantity": 1, "Entry Price": 450.00, "Stop Loss": 435.00, "Target": 500.00},
+        ])
+    edited = st.data_editor(
+        st.session_state["portfolio_input_v75"],
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={"Side": st.column_config.SelectboxColumn("Side", options=["Long", "Short"], required=True)},
+    )
+    st.session_state["portfolio_input_v75"] = edited
+    result = calculate_portfolio(edited, watchlist_df)
+    if result.empty:
+        st.warning("No valid portfolio rows to calculate.")
+        return
+    total_value = pd.to_numeric(result["Market Value"], errors="coerce").sum()
+    total_pnl = pd.to_numeric(result["PnL"], errors="coerce").sum()
+    total_risk = pd.to_numeric(result["Risk To Stop"], errors="coerce").sum()
+    p1, p2, p3, p4 = st.columns(4)
+    with p1: terminal_box("Total Market Value", f"${total_value:,.2f}", "Gross absolute exposure", "neutral")
+    with p2: terminal_box("Total PnL", f"${total_pnl:,.2f}", format_signed_pct(total_pnl / total_value * 100 if total_value else np.nan), "positive" if total_pnl > 0 else "negative" if total_pnl < 0 else "neutral")
+    with p3: terminal_box("Risk To Stop", f"${total_risk:,.2f}", "Based on manual stop inputs", "negative" if total_risk > 0 else "neutral")
+    with p4: terminal_box("Concentration", result.sort_values("Market Value", ascending=False).iloc[0]["Ticker"], "Largest position", "neutral")
+    st.dataframe(result.style.map(color_value, subset=["PnL", "PnL %", "Risk To Stop", "Reward To Target", "Live R:R"]), use_container_width=True, height=330)
+    by_class, concentration, shocks = build_portfolio_risk_tables(result)
+    r1, r2, r3 = st.columns(3)
+    with r1:
+        st.markdown("### EXPOSURE BY ASSET CLASS")
+        st.dataframe(by_class.style.map(color_value, subset=["PnL"]), use_container_width=True, height=270)
+    with r2:
+        st.markdown("### POSITION CONCENTRATION")
+        st.dataframe(concentration[["Ticker", "Asset Class", "Market Value", "PnL", "Risk To Stop"]].style.map(color_value, subset=["PnL", "Risk To Stop"]), use_container_width=True, height=270)
+    with r3:
+        st.markdown("### SCENARIO SHOCK")
+        st.dataframe(shocks.style.map(color_value, subset=["Estimated PnL Impact"]), use_container_width=True, height=270)
+    st.markdown("### TRADE JOURNAL")
+    if "trade_journal_v75" not in st.session_state:
+        st.session_state["trade_journal_v75"] = pd.DataFrame([
+            {"Date": datetime.now(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d"), "Ticker": "GC=F", "Bias": xau_bias, "Setup": "Macro + price confirmation", "Entry Reason": "", "Exit Reason": "", "Result": "Open"}
+        ])
+    journal = st.data_editor(st.session_state["trade_journal_v75"], num_rows="dynamic", use_container_width=True)
+    st.session_state["trade_journal_v75"] = journal
+
+
+def page_screener():
+    st.markdown("## EQSC <GO> MARKET SCREENER")
+    if watchlist_df.empty:
+        st.warning("No watchlist data available.")
+        return
+    tables = build_screener_tables(watchlist_df)
+    choice = st.selectbox("Screener", list(tables.keys()))
+    selected = tables[choice]
+    cols = ["Ticker", "Asset Class", "Last", "Change %", "5-Period %", "20-Period %", "Ann. Vol %", "Volume Ratio", "Dist. 20MA %", "Dist. 50MA %", "Dist. 200MA %", "Trend"]
+    st.dataframe(selected[[c for c in cols if c in selected.columns]].style.map(color_value, subset=[c for c in ["Change %", "5-Period %", "20-Period %", "Dist. 20MA %", "Dist. 50MA %", "Dist. 200MA %"] if c in selected.columns]), use_container_width=True, height=560)
+
+
+def page_corr():
+    st.markdown("## CORR <GO> CORRELATION MATRIX")
+    default = " ".join(active_tickers) if len(active_tickers) >= 2 else "GC=F DX-Y.NYB ^TNX ^VIX SPY QQQ BTC-USD"
+    corr_input = st.text_input("Correlation ticker set", value=default)
+    corr_tickers = [x.upper() for x in corr_input.replace(",", " ").split() if x.strip()]
+    series = {}
+    for ticker in corr_tickers:
+        df = get_price_data(ticker, period, interval)
+        if not df.empty and "Close" in df.columns:
+            series[ticker] = df["Close"].dropna().rename(ticker)
+    prices = pd.DataFrame(series).dropna()
+    if prices.empty or prices.shape[1] < 2:
+        st.warning("Not enough valid data for correlation matrix.")
+        return
+    corr = prices.pct_change().dropna().corr()
+    fig = px.imshow(corr, text_auto=True, aspect="auto", title="Return Correlation Matrix")
+    fig.update_layout(template="plotly_dark", height=650, paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2"))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Correlation ranges from -1 to +1. Positive = move together. Negative = move opposite.")
+
+
+def page_asset_map():
+    st.markdown("## MAP <GO> CROSS-ASSET MAP")
+    if watchlist_df.empty:
+        st.warning("Watchlist data unavailable.")
+        return
+    group_cols = st.columns(3)
+    for idx, (group_name, group_tickers) in enumerate(ASSET_GROUPS.items()):
+        with group_cols[idx % 3]:
+            st.markdown(f'<div class="terminal-panel"><div class="terminal-panel-title">{html.escape(group_name)}</div>', unsafe_allow_html=True)
+            group_data = watchlist_df[watchlist_df["Ticker"].isin(group_tickers)].copy()
+            if group_data.empty:
+                st.markdown('<div class="terminal-small">No matching tickers loaded.</div>', unsafe_allow_html=True)
+            else:
+                mini = group_data[["Ticker", "Last", "Change %", "5-Period %", "Trend"]]
+                st.dataframe(mini.style.map(color_value, subset=["Change %", "5-Period %"]), use_container_width=True, height=210)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+
+def page_data_health():
+    st.markdown("## DATA <GO> DATA HEALTH / SOURCE CONTROL")
+    st.markdown('<div class="institutional-note">V82 still uses free/proxy data by default. This page tells you exactly what loaded, what is missing, and why the terminal may differ from TradingView or broker prices.</div>', unsafe_allow_html=True)
+    w_health, m_health = build_data_health_report(tickers, watchlist_df, macro_summary_df)
+    d1, d2, d3, d4 = st.columns(4)
+    with d1: terminal_box("Data Mode", "FREE / DELAYED", "yfinance + RSS + FF XML", "neutral")
+    with d2: terminal_box("Loaded Watchlist", len(w_health[w_health["Status"] == "OK"]) if not w_health.empty else 0, f"of {len(tickers)} tickers", "neutral")
+    with d3: terminal_box("Market TTL", f"{MARKET_DATA_CACHE_TTL_SECONDS}s", "Cache refresh layer", "neutral")
+    with d4: terminal_box("Last Rerun", datetime.now(ZoneInfo("Asia/Singapore")).strftime("%H:%M:%S"), "Singapore time", "neutral")
+    if st.button("Hard refresh all cached market/news/calendar data"):
+        get_price_data.clear()
+        build_watchlist.clear()
+        get_macro_proxy_data.clear()
+        fetch_rss_news.clear()
+        fetch_forexfactory_calendar.clear()
+        st.success("Cache cleared. The next rerun will pull fresh data from available free sources.")
+    st.markdown("### WATCHLIST DATA HEALTH")
+    if w_health.empty:
+        st.warning("No watchlist health rows available.")
+    else:
+        st.dataframe(w_health.style.map(color_value, subset=["Change %"]), use_container_width=True, height=420)
+    st.markdown("### MACRO DATA HEALTH")
+    if m_health.empty:
+        st.warning("No macro health rows available.")
+    else:
+        st.dataframe(m_health.style.map(color_value, subset=["Change %"]), use_container_width=True, height=300)
+    st.markdown("### WHY THIS CAN DIFFER FROM BLOOMBERG / TRADINGVIEW / BROKER")
+    st.dataframe(pd.DataFrame([
+        {"Reason": "Different instrument", "Example": "GC=F futures vs XAUUSD spot vs broker CFD."},
+        {"Reason": "Different feed", "Example": "Yahoo proxy can delay or smooth data compared with TradingView exchange feeds."},
+        {"Reason": "Different interval", "Example": "1d yfinance close vs live M1 TradingView chart."},
+        {"Reason": "Cache layer", "Example": "Streamlit data refreshes by TTL, not every browser second."},
+        {"Reason": "Market hours", "Example": "Some tickers pause when the underlying exchange is closed."},
+    ]), use_container_width=True, height=250)
+
+
+def page_watchlists():
+    st.markdown("## WLIST <GO> WATCHLISTS / LAYOUT PRESETS")
+    st.caption("Use this page to copy, save, download, and reload watchlists. Streamlit Cloud cannot permanently save per-user files without a database, so V82 uses JSON export/import.")
+    p1, p2 = st.columns([1, 1])
+    with p1:
+        st.markdown("### CURRENT WATCHLIST")
+        st.text_area("Copyable tickers", value=watchlist_input, height=260)
+        st.download_button("Download this watchlist", data=watchlist_payload, file_name="margin_manor_watchlist.json", mime="application/json")
+    with p2:
+        st.markdown("### BUILT-IN PRESETS")
+        preset_df = pd.DataFrame([{"Preset": k, "Ticker Count": len([x for x in v.split(',') if x.strip()]), "Tickers": v} for k, v in WATCHLIST_PRESETS.items()])
+        st.dataframe(preset_df, use_container_width=True, height=360)
+    st.markdown("### DEPLOYMENT NOTE")
+    st.markdown('<div class="institutional-note">For true saveable cloud layouts, the next infrastructure step would be adding a small database such as Supabase, Firebase, or a private Google Sheet. V82 can connect to Supabase for cloud persistence while still remaining deployable on Streamlit Cloud.</div>', unsafe_allow_html=True)
+
+
+def page_trade_checklist():
+    st.markdown("## TRD <GO> XAUUSD TRADE CHECKLIST")
+    direction = st.radio("Trade direction being considered", ["BUY", "SELL"], horizontal=True)
+    auto_macro_ok = (xau_score >= 4 and direction == "BUY") or (xau_score <= -4 and direction == "SELL")
+    auto_event_ok = event_regime not in ["HIGH EVENT RISK", "EXTREME EVENT RISK"]
+    c1, c2, c3 = st.columns(3)
+    with c1: terminal_box("XAU Score", f"{xau_score}/10", xau_bias, "positive" if xau_score > 0 else "negative" if xau_score < 0 else "neutral")
+    with c2: terminal_box("Risk Regime", regime, f"Score {risk_score}", regime_class)
+    with c3: terminal_box("Event Risk", event_regime, f"Score {event_score}", "negative" if not auto_event_ok else "neutral")
+    st.markdown("### CONFIRMATION CHECKS")
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        macro_ok = st.checkbox("Macro bias aligned", value=auto_macro_ok)
+        event_ok = st.checkbox("Event risk controlled", value=auto_event_ok)
+    with k2:
+        dxy_yields_ok = st.checkbox("DXY/yields agree", value=False)
+        crosses_ok = st.checkbox("XAU crosses confirm", value=False)
+    with k3:
+        price_confirmed = st.checkbox("Liquidity sweep + MSS/CISD confirmed", value=False)
+        cycle_ok = st.checkbox("Correct cycle/session timing", value=False)
+    with k4:
+        rr_ok = st.checkbox("R:R + invalidation defined", value=False)
+        journal_note = st.text_input("Setup note", value="")
+    score, max_score, decision, checklist_df = score_trade_checklist(direction, macro_ok, event_ok, dxy_yields_ok, crosses_ok, price_confirmed, cycle_ok, rr_ok)
+    r1, r2, r3 = st.columns(3)
+    with r1: terminal_box("Checklist Score", f"{score}/{max_score}", "Weighted checklist", "positive" if score >= 9 else "neutral" if score >= 7 else "negative")
+    with r2: terminal_box("Decision", decision, "Bias + execution filter", "positive" if "HIGH QUALITY" in decision else "neutral" if "VALID" in decision else "negative")
+    with r3: terminal_box("Action", "ENTER ONLY AFTER CHART TRIGGER" if price_confirmed else "WAIT", journal_note or "No note", "neutral")
+    st.dataframe(checklist_df, use_container_width=True, height=280)
+    st.markdown("### XAUUSD ENTRY MODEL")
+    st.dataframe(pd.DataFrame([
+        {"Direction": "BUY", "Required chart proof": "Sell-side liquidity sweep → bullish SSMT → bullish MSS/CISD → entry on mitigation/retest."},
+        {"Direction": "SELL", "Required chart proof": "Buy-side liquidity sweep → bearish SSMT → bearish MSS/CISD → entry on mitigation/retest."},
+        {"Direction": "BOTH", "Risk rule": "Define invalidation first. The terminal is bias permission; chart structure is the trigger."},
+        {"Direction": "BOTH", "News rule": "Avoid opening directly into red/orange USD events unless this is a planned news-risk trade."},
+    ]), use_container_width=True, height=230)
+
+
+
+def page_dot_plot():
+    st.markdown("## DOT <GO> FOMC DOT PLOT / RATE EXPECTATIONS")
+    dot_counts, dot_summary = build_fomc_dot_summary()
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1: terminal_box("2026 Median Dot", f"{dot_summary.get('median', np.nan):.3f}%", "Manual reference", "neutral")
+    with k2: terminal_box("Mean Dot", f"{dot_summary.get('mean', np.nan):.3f}%", f"{dot_summary.get('total', 0)} dots", "neutral")
+    with k3: terminal_box("Hawkish Dots", dot_summary.get("hawkish_count", 0), ">= 3.50%", "negative" if dot_summary.get("hawkish_count", 0) >= 5 else "neutral")
+    with k4: terminal_box("Dovish Dots", dot_summary.get("dovish_count", 0), "<= 3.00%", "positive" if dot_summary.get("dovish_count", 0) >= 5 else "neutral")
+    with k5: terminal_box("XAU Read", "YIELD LAYER", "Dots affect yields/USD", "negative")
+    st.markdown(f'<div class="dotplot-note"><b>Source:</b> {html.escape(get_active_fomc_dot_source())}.<br><br>{html.escape(dot_summary.get("xau_read", ""))}</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns([1.7, 1])
+    with c1:
+        st.plotly_chart(create_fomc_dot_plot_figure(), use_container_width=True)
+    with c2:
+        st.markdown("### DOT DISTRIBUTION")
+        st.dataframe(dot_counts, use_container_width=True, height=300)
+        st.markdown("### HOW TO READ IT FOR XAUUSD")
+        st.dataframe(pd.DataFrame([
+            {"Dot shift": "Dots move higher", "XAU implication": "Usually bearish/headwind", "Reason": "Higher expected policy rates can lift yields/USD and make non-yielding gold less attractive."},
+            {"Dot shift": "Dots move lower", "XAU implication": "Usually bullish/tailwind", "Reason": "Lower expected rates can pressure yields/USD and support gold."},
+            {"Dot shift": "Wide dispersion", "XAU implication": "Volatility risk", "Reason": "Market may reprice aggressively around Fed speakers, CPI, PCE and NFP."},
+            {"Dot shift": "High dots + crisis risk", "XAU implication": "Mixed", "Reason": "Yield pressure fights safe-haven demand. Price confirmation becomes essential."},
+        ]), use_container_width=True, height=280)
+    st.markdown("### FED DOT PLOT VS XAU FUNDAMENTAL LOGIC")
+    st.markdown('<div class="institutional-note">The dot plot does not directly tell you to buy or sell XAUUSD. It tells you where policymakers think rates may go. XAU reacts through the chain: expected Fed path → Treasury yields → USD/liquidity → gold opportunity cost → XAUUSD repricing. Use this with DXY, 10Y/30Y yields, CPI/PCE/NFP, and your TradingView price confirmation.</div>', unsafe_allow_html=True)
+
+
+def page_realtime_xau_bot():
+    st.markdown("## BOT <GO> REALTIME XAU FUNDAMENTAL ANALYST")
+    st.markdown(f'<div class="institutional-note">Database status: {"SUPABASE CONNECTED" if supabase_is_configured() else "LOCAL FALLBACK ONLY"}. Hosted cron history appears here after GitHub Actions writes to your Supabase table.</div>', unsafe_allow_html=True)
+    st.caption("Rule-based hourly macro/fundamental analysis bot. V82 can read/write Supabase history, so a GitHub Actions cron job can update it even when this Streamlit page is closed. It is not a live Bloomberg/AI feed and not an execution signal.")
+    if st.button("Force new analysis now"):
+        fresh_news = build_news_intelligence(fetch_rss_news(max_items=80), "")
+        manual_record = build_realtime_xau_analysis_record(
+            watchlist_df, macro_summary_df, xau_score, xau_bias, xau_action, xau_driver_df,
+            regime, risk_score, risk_signals, event_regime, event_score, active_events, fresh_news
+        )
+        manual_record["hour_key"] = manual_record["generated_sgt"]
+        if "xau_bot_history" not in st.session_state:
+            st.session_state["xau_bot_history"] = load_bot_history()
+        st.session_state["xau_bot_history"].append(manual_record)
+        st.session_state["xau_bot_history"] = st.session_state["xau_bot_history"][-120:]
+        save_bot_history(st.session_state["xau_bot_history"])
+        st.success("Manual XAU bot analysis snapshot added.")
+
+    if bot_record is None:
+        fresh_news = build_news_intelligence(fetch_rss_news(max_items=80), "")
+        current_record = build_realtime_xau_analysis_record(
+            watchlist_df, macro_summary_df, xau_score, xau_bias, xau_action, xau_driver_df,
+            regime, risk_score, risk_signals, event_regime, event_score, active_events, fresh_news
+        )
+        history = update_xau_bot_history_if_needed(current_record)
+    else:
+        current_record = bot_record
+        history = st.session_state.get("xau_bot_history", load_bot_history())
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    with k1: terminal_box("Bot Verdict", current_record.get("verdict"), f"Confidence: {current_record.get('confidence')}", "positive" if "BULL" in current_record.get("verdict", "") else "negative" if "BEAR" in current_record.get("verdict", "") else "neutral")
+    with k2: terminal_box("Composite", f"{current_record.get('composite')}/100", "Fundamental blend", "positive" if current_record.get("composite", 0) > 0 else "negative" if current_record.get("composite", 0) < 0 else "neutral")
+    with k3: terminal_box("XAU Score", f"{xau_score}/10", xau_bias, "positive" if xau_score > 0 else "negative" if xau_score < 0 else "neutral")
+    with k4: terminal_box("Risk Regime", regime, f"Score {risk_score}", regime_class)
+    with k5: terminal_box("Event Risk", event_regime, f"Score {event_score}", "negative" if event_regime in ["HIGH EVENT RISK", "EXTREME EVENT RISK"] else "neutral")
+
+    st.markdown("### CURRENT HOUR ANALYSIS")
+    st.markdown(render_bot_card(current_record), unsafe_allow_html=True)
+
+    p1, p2 = st.columns([1.2, 1])
+    with p1:
+        st.markdown("### TOP FUNDAMENTAL DRIVERS")
+        drivers = pd.DataFrame(current_record.get("top_drivers", []))
+        if drivers.empty:
+            st.caption("No driver matrix loaded.")
+        else:
+            st.dataframe(drivers.style.map(color_value, subset=["Change %", "Contribution"]), use_container_width=True, height=300)
+    with p2:
+        st.markdown("### IMPORTANT NEWS READ")
+        news = pd.DataFrame(current_record.get("important_news", []))
+        if news.empty:
+            st.caption("No important RSS headlines detected yet.")
+        else:
+            st.dataframe(news, use_container_width=True, height=300)
+
+    st.markdown("### HOURLY BOT ANALYSIS HISTORY")
+    hist = list(reversed(history[-int(bot_history_limit):])) if history else []
+    if not hist:
+        st.info("No bot history yet. Keep the app open with auto-refresh enabled; the bot will add one analysis per hour.")
+    else:
+        for item in hist:
+            st.markdown(render_bot_card(item), unsafe_allow_html=True)
+
+    st.markdown("### STRUCTURED HISTORY TABLE")
+    hist_df = build_bot_history_dataframe(history)
+    if hist_df.empty:
+        st.caption("No history table yet.")
+    else:
+        st.dataframe(hist_df.tail(int(bot_history_limit)).iloc[::-1], use_container_width=True, height=360)
+        st.download_button(
+            "Download bot history JSON",
+            data=json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8"),
+            file_name="margin_manor_xau_bot_history.json",
+            mime="application/json",
+        )
+
+    st.markdown("### IMPORTANT LIMITATION")
+    st.markdown('<div class="institutional-note">V83 reads hosted cron history from Supabase. Your GitHub Actions worker can continue creating hourly bot records even when nobody is viewing this Streamlit app, as long as the workflow, secrets and Supabase project remain active.</div>', unsafe_allow_html=True)
+
+
+    st.markdown("## HELP <GO> FUNCTION DIRECTORY")
+    st.markdown('<div class="command-help">Use Bloomberg-style commands in the command bar. The app routes to one active function screen instead of behaving only like a website tab.</div>', unsafe_allow_html=True)
+    help_df = pd.DataFrame([
+        {"Command": "MMKT <GO>", "Screen": "Market Command Center", "Example": "MMKT <GO>"},
+        {"Command": "GP <TICKER> <GO>", "Screen": "Price Graph", "Example": "GP GC=F <GO>"},
+        {"Command": "DES <TICKER> <GO>", "Screen": "Security Description", "Example": "DES AAPL <GO>"},
+        {"Command": "RV <A> <B> <C> <GO>", "Screen": "Relative Value", "Example": "RV GC=F DX-Y.NYB ^TNX <GO>"},
+        {"Command": "XAU <GO>", "Screen": "Gold Cockpit", "Example": "XAU <GO>"},
+        {"Command": "RATES <GO>", "Screen": "Yield Curve", "Example": "RATES <GO>"},
+        {"Command": "MACRO <GO>", "Screen": "Macro Dashboard", "Example": "MACRO <GO>"},
+        {"Command": "CN <KEYWORD> <GO>", "Screen": "News Intelligence", "Example": "CN FED <GO>"},
+        {"Command": "ECO <GO>", "Screen": "Economic Calendar", "Example": "ECO <GO>"},
+        {"Command": "ALRT <GO>", "Screen": "Alert Deck", "Example": "ALRT <GO>"},
+        {"Command": "PORT <GO>", "Screen": "Portfolio Risk", "Example": "PORT <GO>"},
+        {"Command": "EQSC <GO>", "Screen": "Screener", "Example": "EQSC <GO>"},
+        {"Command": "CORR <A> <B> <GO>", "Screen": "Correlation", "Example": "CORR GC=F DX-Y.NYB ^TNX <GO>"},
+        {"Command": "MAP <GO>", "Screen": "Cross-Asset Map", "Example": "MAP <GO>"},
+        {"Command": "DATA <GO>", "Screen": "Data Health", "Example": "DATA <GO>"},
+        {"Command": "WLIST <GO>", "Screen": "Watchlists", "Example": "WLIST <GO>"},
+        {"Command": "TRD <GO>", "Screen": "XAU Trade Checklist", "Example": "TRD <GO>"},
+        {"Command": "DOT <GO>", "Screen": "FOMC Dot Plot", "Example": "DOT <GO>"},
+        {"Command": "BOT <GO>", "Screen": "Realtime XAU Analyst", "Example": "BOT <GO>"},
+        {"Command": "FEED <GO>", "Screen": "Reliable Data Sources", "Example": "FEED <GO>"},
+        {"Command": "FED <GO>", "Screen": "Official SEP/Dot Monitor", "Example": "FED <GO>"},
+        {"Command": "NOTIFY <GO>", "Screen": "Telegram/Discord/Email Alerts", "Example": "NOTIFY <GO>"},
+        {"Command": "CURVE <GO>", "Screen": "Advanced Yield Analytics", "Example": "CURVE <GO>"},
+        {"Command": "BROKER <GO>", "Screen": "OANDA/MT5 Broker Feed", "Example": "BROKER <GO>"},
+        {"Command": "BT <GO>", "Screen": "Bot Backtest", "Example": "BT <GO>"},
+        {"Command": "JRN <GO>", "Screen": "Trade Journal", "Example": "JRN <GO>"},
+    ])
+    st.dataframe(help_df, use_container_width=True, height=500)
+    st.markdown("### WHAT MAKES THIS V82 BUILD MORE BLOOMBERG-LIKE")
+    st.dataframe(pd.DataFrame([
+        {"Upgrade": "Command-first navigation", "Result": "The command bar controls the active function screen."},
+        {"Upgrade": "Security pages", "Result": "Each ticker can show chart, returns, MAs, vol, support/resistance and correlation."},
+        {"Upgrade": "Relative value", "Result": "Normalized multi-asset comparison, pair ratio and z-score."},
+        {"Upgrade": "XAU cockpit", "Result": "Gold-specific macro score, cross map, alerts and trade checklist."},
+        {"Upgrade": "News intelligence", "Result": "RSS headlines tagged by theme, gold read and urgency."},
+        {"Upgrade": "Portfolio risk", "Result": "Manual portfolio, exposure, concentration, stop risk and scenario shocks."},
+        {"Upgrade": "Dense terminal UI", "Result": "Tighter layout, bottom status bar, function labels and less web-app whitespace."},
+        {"Upgrade": "Data health", "Result": "Shows what loaded, what failed, cache TTL and why sources differ."},
+        {"Upgrade": "Saveable watchlists", "Result": "Built-in presets plus JSON import/export for deployable saved layouts."},
+        {"Upgrade": "Alerts", "Result": "Custom XAU and VIX thresholds with optional browser beep."},
+        {"Upgrade": "Trade checklist", "Result": "Dedicated XAUUSD checklist that separates bias permission from entry trigger."},
+        {"Upgrade": "FOMC dot plot", "Result": "Manual 2026 dot-plot reference with XAU yield-path interpretation."},
+        {"Upgrade": "Realtime XAU bot", "Result": "Hourly fundamental analysis history using drivers, news, event risk, yields/USD and dots."},
+        {"Upgrade": "Correlation/curve logic", "Result": "Gold sensitivity map and institutional yield-curve read."},
+        {"Upgrade": "Reliable free data layer", "Result": "Adds official FRED rates, optional OANDA broker feed and data-source status pages."},
+        {"Upgrade": "Notifications", "Result": "GitHub cron can send Telegram, Discord and email alerts when configured."},
+        {"Upgrade": "Backtesting", "Result": "Stores entry XAU price and evaluates bot calls over 1H/4H/24H horizons."},
+        {"Upgrade": "Trade journal", "Result": "Saves actual trades and outcomes in Supabase for review."},
+    ]), use_container_width=True, height=420)
+
+
+# ============================================================
+# V83 — RELIABLE DATA, FED MONITOR, NOTIFICATIONS, BACKTEST, JOURNAL
+# ============================================================
+
+@st.cache_data(ttl=FRED_CACHE_TTL_SECONDS, show_spinner=False)
+def fetch_fred_csv_series(series_id, lookback_rows=20):
+    try:
+        url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+        df = pd.read_csv(url)
+        if df.empty:
+            return pd.DataFrame()
+        date_col = df.columns[0]
+        val_col = df.columns[1]
+        df = df.rename(columns={date_col: "Date", val_col: "Value"})
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df["Value"] = pd.to_numeric(df["Value"].replace(".", np.nan), errors="coerce")
+        df = df.dropna(subset=["Date", "Value"]).tail(int(lookback_rows))
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
+def latest_fred_value(series_id):
+    df = fetch_fred_csv_series(series_id, 30)
+    if df.empty:
+        return np.nan, np.nan, "No data"
+    last = float(df["Value"].iloc[-1])
+    prev = float(df["Value"].iloc[-2]) if len(df) >= 2 else np.nan
+    change = last - prev if not np.isnan(prev) else np.nan
+    date = df["Date"].iloc[-1].strftime("%Y-%m-%d")
+    return last, change, date
+
+
+def build_advanced_curve_snapshot():
+    specs = {"2Y Treasury": "DGS2", "5Y Treasury": "DGS5", "10Y Treasury": "DGS10", "30Y Treasury": "DGS30", "10Y Real Yield": "DFII10", "10Y Breakeven Inflation": "T10YIE"}
+    rows = []
+    values = {}
+    for label, sid in specs.items():
+        value, chg, date = latest_fred_value(sid)
+        values[sid] = value
+        rows.append({"Metric": label, "FRED Series": sid, "Latest %": round(value, 3) if not np.isnan(value) else None, "Δ pp": round(chg, 3) if not np.isnan(chg) else None, "Date": date})
+    def spread(a, b):
+        va, vb = values.get(a, np.nan), values.get(b, np.nan)
+        return np.nan if np.isnan(va) or np.isnan(vb) else (va - vb) * 100
+    spreads = pd.DataFrame([
+        {"Spread": "2s10s", "bps": round(spread("DGS10", "DGS2"), 1) if not np.isnan(spread("DGS10", "DGS2")) else None, "XAU Read": "Deeper inversion can signal growth stress, but high real yields still pressure gold."},
+        {"Spread": "5s30s", "bps": round(spread("DGS30", "DGS5"), 1) if not np.isnan(spread("DGS30", "DGS5")) else None, "XAU Read": "Steepening can reflect term-premium/inflation repricing; watch USD and real yields."},
+        {"Spread": "10Y real yield", "bps": round(values.get("DFII10", np.nan) * 100, 1) if not np.isnan(values.get("DFII10", np.nan)) else None, "XAU Read": "Higher real yields are one of the cleanest structural headwinds for XAU."},
+        {"Spread": "10Y breakeven", "bps": round(values.get("T10YIE", np.nan) * 100, 1) if not np.isnan(values.get("T10YIE", np.nan)) else None, "XAU Read": "Rising breakevens can help gold if real yields do not rise faster."},
+    ])
+    return pd.DataFrame(rows), spreads
+
+
+def get_oanda_price(instrument="XAU_USD"):
+    try:
+        token = st.secrets.get("OANDA_API_TOKEN", "") or os.getenv("OANDA_API_TOKEN", "")
+        account_id = st.secrets.get("OANDA_ACCOUNT_ID", "") or os.getenv("OANDA_ACCOUNT_ID", "")
+        env = (st.secrets.get("OANDA_ENV", "practice") or os.getenv("OANDA_ENV", "practice")).lower()
+    except Exception:
+        token = os.getenv("OANDA_API_TOKEN", "")
+        account_id = os.getenv("OANDA_ACCOUNT_ID", "")
+        env = os.getenv("OANDA_ENV", "practice").lower()
+    if not token or not account_id:
+        return None
+    base = OANDA_LIVE_URL if env == "live" else OANDA_PRACTICE_URL
+    try:
+        url = f"{base}/v3/accounts/{account_id}/pricing"
+        resp = requests.get(url, params={"instruments": instrument}, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+        if resp.status_code != 200:
+            return {"status": "error", "code": resp.status_code, "message": resp.text[:200]}
+        data = resp.json()
+        prices = data.get("prices", [])
+        if not prices:
+            return {"status": "error", "message": "No OANDA price returned"}
+        p = prices[0]
+        bid = float(p.get("bids", [{}])[0].get("price"))
+        ask = float(p.get("asks", [{}])[0].get("price"))
+        return {"status": "ok", "instrument": instrument, "bid": bid, "ask": ask, "mid": (bid + ask) / 2, "time": p.get("time", ""), "source": "OANDA v20"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)[:200]}
+
+
+def load_sep_updates(limit=20):
+    client = get_supabase_client()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        resp = client.table("fomc_sep_updates").select("*").order("detected_at", desc=True).limit(int(limit)).execute()
+        return pd.DataFrame(resp.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_notification_log(limit=50):
+    client = get_supabase_client()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        resp = client.table("xau_notification_log").select("*").order("sent_at", desc=True).limit(int(limit)).execute()
+        return pd.DataFrame(resp.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def trade_signal_from_verdict(verdict, confidence=None, composite=None):
+    """Convert a bot verdict into an actionable trade-bias label.
+
+    Important:
+    - BULLISH / BEARISH is the bot's fundamental read.
+    - Trade Signal is stricter. Low confidence and event-risk override are NO TRADE.
+    """
+    verdict = str(verdict or "").upper().strip()
+    confidence_txt = str(confidence or "").upper().strip()
+
+    try:
+        comp = float(composite)
+    except Exception:
+        comp = None
+
+    # If event risk or low confidence is present, do not convert the fundamental view into a trade bias.
+    if "EVENT-RISK" in confidence_txt or "EVENT RISK" in confidence_txt or confidence_txt.startswith("LOW"):
+        return "NO TRADE / EVENT RISK"
+
+    # Require stronger composite confirmation for an actionable signal.
+    # This avoids treating weak directional reads as real trade calls.
+    if verdict == "BULLISH XAU":
+        if comp is None or comp >= 35:
+            return "LONG BIAS"
+        return "NO TRADE / WEAK BULL"
+    if verdict == "BEARISH XAU":
+        if comp is None or comp <= -35:
+            return "SHORT BIAS"
+        return "NO TRADE / WEAK BEAR"
+
+    return "NO TRADE / WAIT"
+
+
+def load_backtest_dataframe(limit=500):
+    client = get_supabase_client()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        resp = client.table("xau_bot_history").select("hour_key, generated_at, verdict, confidence, composite, xau_score, entry_xau_price, outcome_1h_pct, outcome_4h_pct, outcome_24h_pct, record").order("generated_at", desc=True).limit(int(limit)).execute()
+        rows = resp.data or []
+        out = []
+        for r in rows:
+            rec = r.get("record") if isinstance(r.get("record"), dict) else {}
+            verdict = r.get("verdict") or rec.get("verdict")
+            out.append({
+                "Hour": r.get("hour_key"),
+                "Verdict": verdict,
+                "Trade Signal": trade_signal_from_verdict(verdict, r.get("confidence") or rec.get("confidence"), r.get("composite") or rec.get("composite")),
+                "Confidence": r.get("confidence") or rec.get("confidence"),
+                "Composite": r.get("composite") or rec.get("composite"),
+                "Reference XAU": r.get("entry_xau_price") or rec.get("entry_xau_price"),
+                "1H %": r.get("outcome_1h_pct") or rec.get("outcome_1h_pct"),
+                "4H %": r.get("outcome_4h_pct") or rec.get("outcome_4h_pct"),
+                "24H %": r.get("outcome_24h_pct") or rec.get("outcome_24h_pct"),
+            })
+        return pd.DataFrame(out)
+    except Exception:
+        return pd.DataFrame()
+
+
+def summarize_backtest(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    rows = []
+    for horizon in ["1H %", "4H %", "24H %"]:
+        sub = df.dropna(subset=[horizon]).copy()
+        if sub.empty:
+            continue
+
+        directional = sub[sub["Trade Signal"].isin(["LONG BIAS", "SHORT BIAS"])].copy()
+        wait_calls = sub[~sub["Trade Signal"].isin(["LONG BIAS", "SHORT BIAS"])].copy()
+
+        if not directional.empty:
+            directional["Hit"] = np.where(
+                directional["Trade Signal"] == "LONG BIAS",
+                directional[horizon] > 0,
+                directional[horizon] < 0,
+            )
+            hit_rate = float(directional["Hit"].mean() * 100)
+            avg_directional_abs = float(directional[horizon].abs().mean())
+        else:
+            hit_rate = np.nan
+            avg_directional_abs = np.nan
+
+        avg_wait_abs = float(wait_calls[horizon].abs().mean()) if not wait_calls.empty else np.nan
+
+        rows.append({
+            "Horizon": horizon,
+            "Actionable Calls": int(len(directional)),
+            "Actionable Hit Rate %": round(hit_rate, 1) if not np.isnan(hit_rate) else None,
+            "Avg Actionable Move %": round(avg_directional_abs, 3) if not np.isnan(avg_directional_abs) else None,
+            "No-Trade Calls Tracked": int(len(wait_calls)),
+            "Avg No-Trade Move %": round(avg_wait_abs, 3) if not np.isnan(avg_wait_abs) else None,
+        })
+    return pd.DataFrame(rows)
+
+
+def load_trade_journal(limit=300):
+    client = get_supabase_client()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        resp = client.table("trade_journal").select("*").order("created_at", desc=True).limit(int(limit)).execute()
+        return pd.DataFrame(resp.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def insert_trade_journal(row):
+    client = get_supabase_client()
+    if client is None:
+        return False, "Supabase is not configured."
+    try:
+        client.table("trade_journal").insert(row).execute()
+        return True, "Trade journal row saved."
+    except Exception as e:
+        return False, str(e)[:300]
+
+
+def page_reliable_data_sources():
+    st.markdown("## FEED <GO> RELIABLE DATA SOURCES")
+    st.markdown('<div class="institutional-note">V83 uses a layered free-data model: broker feed when configured, official FRED rates for yields/real yields/breakevens, Yahoo/proxy market data for broad assets, RSS/news feeds for headlines, and Supabase for persistence.</div>', unsafe_allow_html=True)
+    oanda = get_oanda_price()
+    rows = [
+        {"Layer": "Broker XAU price", "Source": "OANDA v20 optional", "Status": "Configured" if isinstance(oanda, dict) and oanda.get("status") == "ok" else "Not configured / fallback", "Purpose": "Closer to broker XAUUSD bid/ask when API token is provided."},
+        {"Layer": "Treasury curve", "Source": "FRED CSV DGS2/DGS5/DGS10/DGS30", "Status": "Official public data", "Purpose": "2s10s, 5s30s, yield pressure and curve regime."},
+        {"Layer": "Real yield", "Source": "FRED DFII10", "Status": "Official public data", "Purpose": "Structural XAU headwind/tailwind read."},
+        {"Layer": "Breakeven inflation", "Source": "FRED T10YIE", "Status": "Official public data", "Purpose": "Inflation expectations vs real-yield split."},
+        {"Layer": "Calendar", "Source": "FRED/Fed optional + FairEconomy fallback", "Status": "Hybrid", "Purpose": "Event risk and FOMC/SEP monitoring."},
+        {"Layer": "Hourly bot database", "Source": "Supabase", "Status": "Connected" if supabase_is_configured() else "Not connected", "Purpose": "Persists bot history, outcomes, journal and notification logs."},
+    ]
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, height=260)
+    if isinstance(oanda, dict) and oanda.get("status") == "ok":
+        terminal_box("OANDA XAU MID", f"{oanda['mid']:.3f}", f"Bid {oanda['bid']:.3f} / Ask {oanda['ask']:.3f} | {oanda.get('time','')}", "success")
+    else:
+        alert_card("OANDA broker feed is optional. Add OANDA_API_TOKEN, OANDA_ACCOUNT_ID and OANDA_ENV to Streamlit/GitHub secrets to enable broker-price integration.", "warning")
+
+
+def page_fed_sep_monitor():
+    st.markdown("## FED <GO> OFFICIAL FED SEP / DOT MONITOR")
+    st.markdown('<div class="institutional-note">The hosted bot now checks the Federal Reserve FOMC calendar/projection-materials page and stores detected SEP links in Supabase. Exact dot values remain manual/fallback unless the official material can be parsed safely.</div>', unsafe_allow_html=True)
+    df = load_sep_updates()
+    if df.empty:
+        st.info("No SEP update rows found yet. Run the GitHub Actions bot once after applying the V83 schema and bot script.")
+    else:
+        st.dataframe(df, use_container_width=True, height=320)
+    st.markdown("### ACTIVE DOT PLOT")
+    st.plotly_chart(create_fomc_dot_plot_figure(), use_container_width=True)
+    st.caption(get_active_fomc_dot_source())
+
+
+def page_notifications():
+    st.markdown("## NOTIFY <GO> REAL-TIME ALERT NOTIFICATIONS")
+    st.markdown('<div class="institutional-note">V83 bot can send Telegram, Discord and SMTP email alerts from GitHub Actions when high-confidence XAU conditions or extreme event risk appear.</div>', unsafe_allow_html=True)
+    cfg_rows = []
+    for name, keys in {"Telegram": ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"], "Discord": ["DISCORD_WEBHOOK_URL"], "Email SMTP": ["SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD", "ALERT_EMAIL_TO"]}.items():
+        ok = True
+        for k in keys:
+            try:
+                val = st.secrets.get(k, "") or os.getenv(k, "")
+            except Exception:
+                val = os.getenv(k, "")
+            ok = ok and bool(val)
+        cfg_rows.append({"Channel": name, "Required secrets": ", ".join(keys), "Status": "Configured" if ok else "Not configured"})
+    st.dataframe(pd.DataFrame(cfg_rows), use_container_width=True, height=160)
+    log_df = load_notification_log()
+    st.markdown("### RECENT SENT ALERTS")
+    if log_df.empty:
+        st.caption("No notification log yet.")
+    else:
+        st.dataframe(log_df, use_container_width=True, height=340)
+
+
+def page_advanced_yield_curve():
+    st.markdown("## CURVE <GO> ADVANCED YIELD ANALYTICS")
+    curve_df, spreads_df = build_advanced_curve_snapshot()
+    st.markdown('<div class="institutional-note">Official FRED rates are used here: nominal Treasury yields, 10Y TIPS real yield and 10Y breakeven inflation. This gives a cleaner XAU read than only watching US10Y.</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("### RATES / REAL YIELDS / BREAKEVENS")
+        st.dataframe(curve_df, use_container_width=True, height=260)
+    with c2:
+        st.markdown("### SPREAD REGIME READ")
+        st.dataframe(spreads_df, use_container_width=True, height=260)
+    if not curve_df.empty:
+        plot_df = curve_df[curve_df["Metric"].isin(["2Y Treasury", "5Y Treasury", "10Y Treasury", "30Y Treasury"])].copy()
+        if not plot_df.empty:
+            fig = px.line(plot_df, x="Metric", y="Latest %", markers=True, title="US Treasury curve — official FRED latest observations")
+            fig.update_layout(template="plotly_dark", paper_bgcolor="#000000", plot_bgcolor="#050505", font=dict(color="#f2f2f2", family="Courier New"))
+            st.plotly_chart(fig, use_container_width=True)
+
+
+
+def load_xau_price_snapshots(limit=20):
+    client = get_supabase_client()
+    if client is None:
+        return pd.DataFrame()
+    try:
+        resp = client.table("xau_price_snapshots").select("observed_at, xau_price, source, meta").order("observed_at", desc=True).limit(int(limit)).execute()
+        return pd.DataFrame(resp.data or [])
+    except Exception:
+        return pd.DataFrame()
+
+
+def page_broker_feed():
+    st.markdown("## BROKER <GO> XAUUSD BROKER PRICE INTEGRATION")
+    oanda = get_oanda_price("XAU_USD")
+    if isinstance(oanda, dict) and oanda.get("status") == "ok":
+        c1, c2, c3 = st.columns(3)
+        with c1: terminal_box("OANDA BID", f"{oanda['bid']:.3f}", oanda.get("time", ""), "neutral")
+        with c2: terminal_box("OANDA ASK", f"{oanda['ask']:.3f}", "Broker ask", "neutral")
+        with c3: terminal_box("OANDA MID", f"{oanda['mid']:.3f}", "Used as preferred XAU price in V83 bot when configured", "success")
+    else:
+        alert_card("OANDA is not configured or did not return a price. Your terminal will fall back to GC=F / free proxy data.", "warning")
+        if isinstance(oanda, dict):
+            st.code(json.dumps(oanda, indent=2))
+    st.markdown("### SECRETS NEEDED")
+    st.code("OANDA_API_TOKEN = \"your_oanda_token\"\nOANDA_ACCOUNT_ID = \"your_oanda_account_id\"\nOANDA_ENV = \"practice\"  # or \"live\"")
+    st.markdown("### MT5 NOTE")
+    st.caption("Streamlit Cloud cannot directly read your local MT5 terminal. For MT5 broker prices, use the included mt5_price_bridge_template.py on your Windows/MT5 machine to post price snapshots into Supabase.")
+    snap_df = load_xau_price_snapshots()
+    st.markdown("### LATEST XAU PRICE SNAPSHOTS")
+    if snap_df.empty:
+        st.caption("No price snapshots yet. The hourly bot saves snapshots automatically, and the MT5 bridge can add broker snapshots.")
+    else:
+        st.dataframe(snap_df, use_container_width=True, height=260)
+
+
+def page_bot_backtest():
+    st.markdown("## BT <GO> XAU BOT BACKTEST / OUTCOME TRACKER")
+    st.markdown('<div class="institutional-note">The hourly worker saves a Reference XAU price for every bot call and updates 1H/4H/24H outcomes when enough time has passed. Reference XAU is not a trade entry. Trade Signal is stricter than Verdict: LOW confidence or EVENT-RISK OVERRIDE calls are treated as NO TRADE, even if the fundamental verdict leans bullish or bearish.</div>', unsafe_allow_html=True)
+    df = load_backtest_dataframe()
+    summary = summarize_backtest(df)
+    if summary.empty:
+        st.info("No completed outcomes yet. Wait at least 1 hour after V83 bot records start saving reference prices, then rerun the workflow.")
+    else:
+        st.dataframe(summary, use_container_width=True, height=190)
+    if not df.empty:
+        st.markdown("### BOT CALL HISTORY")
+        st.caption("Reference XAU = price snapshot at bot-analysis time. Trade Signal is actionable only when confidence is not low/event-risk and the composite score is strong enough.")
+        st.dataframe(df, use_container_width=True, height=440)
+
+
+def page_trade_journal():
+    st.markdown("## JRN <GO> PORTFOLIO / RISK JOURNAL")
+    st.markdown('<div class="institutional-note">Save XAUUSD trade outcomes so you can compare terminal bias, bot verdict, setup quality, R:R and actual result.</div>', unsafe_allow_html=True)
+    with st.form("trade_journal_form"):
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            symbol = st.text_input("Symbol", value="XAUUSD")
+            direction = st.selectbox("Direction", ["Long", "Short"])
+        with c2:
+            entry = st.number_input("Entry", value=0.0, step=0.1, format="%.3f")
+            exit_price = st.number_input("Exit", value=0.0, step=0.1, format="%.3f")
+        with c3:
+            size = st.number_input("Position size / lots", value=0.0, step=0.01, format="%.2f")
+            rr = st.number_input("Planned R:R", value=4.0, step=0.25, format="%.2f")
+        with c4:
+            bot_verdict = st.selectbox("Bot verdict at entry", ["BULLISH XAU", "BEARISH XAU", "MIXED / WAIT", "Not checked"])
+            outcome = st.selectbox("Outcome", ["Win", "Loss", "Breakeven", "Open", "Manual close"])
+        notes = st.text_area("Notes / setup", placeholder="Example: Buy-side sweep, bearish SSMT, CISD, NY AM C2, no red news in front.")
+        submitted = st.form_submit_button("Save trade")
+        if submitted:
+            pnl_points = None
+            if entry and exit_price:
+                pnl_points = (exit_price - entry) if direction == "Long" else (entry - exit_price)
+            ok, msg = insert_trade_journal({"symbol": symbol, "direction": direction, "entry_price": entry or None, "exit_price": exit_price or None, "size": size or None, "planned_rr": rr, "bot_verdict": bot_verdict, "outcome": outcome, "pnl_points": pnl_points, "notes": notes})
+            st.success(msg) if ok else st.error(msg)
+    df = load_trade_journal()
+    st.markdown("### SAVED JOURNAL")
+    if df.empty:
+        st.caption("No journal rows yet.")
+    else:
+        st.dataframe(df, use_container_width=True, height=420)
+
+# ============================================================
+# ROUTER
+# ============================================================
+
+if active_screen == FUNCTION_SCREENS[0]:
+    page_home()
+elif active_screen == FUNCTION_SCREENS[1]:
+    page_chart()
+elif active_screen == FUNCTION_SCREENS[2]:
+    page_security()
+elif active_screen == FUNCTION_SCREENS[3]:
+    page_relative_value()
+elif active_screen == FUNCTION_SCREENS[4]:
+    page_xau()
+elif active_screen == FUNCTION_SCREENS[5]:
+    page_rates()
+elif active_screen == FUNCTION_SCREENS[6]:
+    page_macro()
+elif active_screen == FUNCTION_SCREENS[7]:
+    page_news()
+elif active_screen == FUNCTION_SCREENS[8]:
+    page_econ()
+elif active_screen == FUNCTION_SCREENS[9]:
+    page_alerts()
+elif active_screen == FUNCTION_SCREENS[10]:
+    page_portfolio()
+elif active_screen == FUNCTION_SCREENS[11]:
+    page_screener()
+elif active_screen == FUNCTION_SCREENS[12]:
+    page_corr()
+elif active_screen == FUNCTION_SCREENS[13]:
+    page_asset_map()
+elif active_screen == FUNCTION_SCREENS[15]:
+    page_data_health()
+elif active_screen == FUNCTION_SCREENS[16]:
+    page_watchlists()
+elif active_screen == FUNCTION_SCREENS[17]:
+    page_trade_checklist()
+elif active_screen == FUNCTION_SCREENS[18]:
+    page_dot_plot()
+elif active_screen == FUNCTION_SCREENS[19]:
+    page_realtime_xau_bot()
+elif active_screen == FUNCTION_SCREENS[20]:
+    page_reliable_data_sources()
+elif active_screen == FUNCTION_SCREENS[21]:
+    page_fed_sep_monitor()
+elif active_screen == FUNCTION_SCREENS[22]:
+    page_notifications()
+elif active_screen == FUNCTION_SCREENS[23]:
+    page_advanced_yield_curve()
+elif active_screen == FUNCTION_SCREENS[24]:
+    page_broker_feed()
+elif active_screen == FUNCTION_SCREENS[25]:
+    page_bot_backtest()
+elif active_screen == FUNCTION_SCREENS[26]:
+    page_trade_journal()
+else:
+    page_help()
+
+# ============================================================
+# FOOTER / STATUS BAR
+# ============================================================
+
+st.markdown("---")
+st.caption("Built with Streamlit, Plotly, Supabase, GitHub Actions, yfinance/free proxies, official FRED rates, optional OANDA broker feed, notifications, backtesting, journal, FOMC/SEP monitor and XAU analysis bot.")
+st.caption("Free/proxy data can be delayed, incomplete, rate-limited, or unavailable. Optional broker/API integrations improve reliability but this is still educational/research infrastructure, not institutional execution.")
+
+st.markdown(
+    f"""
+    <div class="status-bar">
+        MARGIN MANOR TERMINAL V82 | ACTIVE: {html.escape(active_screen)} | DATA: FREE/DELAYED | AUTO-REFRESH: {'ON' if auto_refresh_enabled else 'OFF'} {int(auto_refresh_seconds)}s | MARKET TTL: {MARKET_DATA_CACHE_TTL_SECONDS}s | PERIOD: {period} | INTERVAL: {interval} | XAU SCORE: {xau_score}/10 | RISK: {html.escape(regime)} | EVENT: {html.escape(event_regime)} | LAST RERUN SGT: {datetime.now(ZoneInfo('Asia/Singapore')).strftime('%Y-%m-%d %H:%M:%S')}
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
