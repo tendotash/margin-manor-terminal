@@ -14,7 +14,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      # Supabase project URL is public, so hardcoding it removes secret-format issues.
+      SUPABASE_URL: https://iycqrpfapqpawwrrzkexh.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
@@ -33,32 +34,21 @@ jobs:
           echo "Repo files:"
           ls -la
 
-          echo "Python version:"
-          python --version
-
           echo "Checking required files..."
-          if [ ! -f "requirements.txt" ]; then
-            echo "ERROR: requirements.txt is missing from the repo root."
-            exit 10
-          fi
+          test -f requirements.txt || (echo "ERROR: requirements.txt is missing from repo root" && exit 10)
+          test -f xau_hourly_bot_job.py || (echo "ERROR: xau_hourly_bot_job.py is missing from repo root" && exit 11)
 
-          if [ ! -f "xau_hourly_bot_job.py" ]; then
-            echo "ERROR: xau_hourly_bot_job.py is missing from the repo root."
-            exit 11
-          fi
+          echo "Checking key secret..."
+          test -n "$SUPABASE_SERVICE_ROLE_KEY" || (echo "ERROR: SUPABASE_SERVICE_ROLE_KEY GitHub secret is missing" && exit 13)
 
-          echo "Checking GitHub secrets..."
-          if [ -z "$SUPABASE_URL" ]; then
-            echo "ERROR: SUPABASE_URL GitHub secret is missing."
-            exit 12
-          fi
-
-          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
-            echo "ERROR: SUPABASE_SERVICE_ROLE_KEY GitHub secret is missing."
-            exit 13
-          fi
-
-          echo "Preflight checks passed."
+          echo "Supabase URL format check:"
+          python - <<'PY'
+          import os
+          from urllib.parse import urlparse
+          url = os.environ.get("SUPABASE_URL", "")
+          print("URL:", url)
+          print("Host:", urlparse(url).netloc)
+          PY
 
       - name: Install dependencies
         shell: bash
@@ -75,6 +65,18 @@ jobs:
           import pandas, numpy, yfinance, feedparser, requests
           from supabase import create_client
           print("Python imports OK.")
+          PY
+
+      - name: DNS test Supabase URL
+        shell: bash
+        run: |
+          set -e
+          python - <<'PY'
+          import os, socket
+          from urllib.parse import urlparse
+          host = urlparse(os.environ["SUPABASE_URL"]).netloc
+          print("Testing DNS host:", host)
+          print("DNS resolved to:", socket.gethostbyname(host))
           PY
 
       - name: Run hourly XAU fundamental bot
