@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   run-xau-hourly-bot:
     runs-on: ubuntu-latest
@@ -19,12 +22,24 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+
+      - name: Debug required files and secrets
+        run: |
+          echo "Checking required files..."
+          test -f requirements.txt  (echo "ERROR: requirements.txt is missing from repo root" && exit 1)
+          test -f xau_hourly_bot_job.py  (echo "ERROR: xau_hourly_bot_job.py is missing from repo root" && exit 1)
+
+          echo "Checking GitHub secrets..."
+          test -n "$SUPABASE_URL"  (echo "ERROR: SUPABASE_URL secret is missing" && exit 1)
+          test -n "$SUPABASE_SERVICE_ROLE_KEY"  (echo "ERROR: SUPABASE_SERVICE_ROLE_KEY secret is missing" && exit 1)
+
+          echo "All required files and secrets found."
 
       - name: Install dependencies
         run: |
