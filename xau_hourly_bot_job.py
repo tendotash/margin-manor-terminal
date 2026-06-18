@@ -64,11 +64,36 @@ DRIVER_SPECS = [
 ]
 
 
+def clean_env_value(value):
+    """Clean common copy/paste formats from GitHub/Streamlit secrets."""
+    value = str(value or "").strip()
+
+    # Handles accidental GitHub secret value like:
+    # SUPABASE_URL = "https://xxxx.supabase.co"
+    if "=" in value and value.split("=", 1)[0].strip().upper().startswith("SUPABASE_"):
+        value = value.split("=", 1)[1].strip()
+
+    # Remove surrounding quotes only.
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        value = value[1:-1].strip()
+
+    # Remove accidental whitespace/newlines inside URL/key edges.
+    return value.strip()
+
+
 def supabase_client():
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip() or os.getenv("SUPABASE_ANON_KEY", "").strip()
+    url = clean_env_value(os.getenv("SUPABASE_URL", ""))
+    key = clean_env_value(os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")) or clean_env_value(os.getenv("SUPABASE_ANON_KEY", ""))
+
     if not url or not key:
         raise RuntimeError("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY")
+
+    if not url.startswith("https://") or "supabase.co" not in url:
+        raise RuntimeError(f"SUPABASE_URL looks invalid after cleaning: {url!r}")
+
+    print(f"Supabase URL being used: {url}")
+    print(f"Supabase key prefix OK: {key[:10]}...")
+
     return create_client(url, key)
 
 
