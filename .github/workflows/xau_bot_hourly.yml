@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Supabase project URL is public, so hardcoding it removes secret-format issues.
-      SUPABASE_URL: https://iycqrpfapqpawwrrzkexh.supabase.co
+      # Correct Supabase project URL copied from your Project ID.
+      SUPABASE_URL: https://iycqrfpafqpawwrrzkexh.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
