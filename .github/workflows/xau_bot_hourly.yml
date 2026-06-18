@@ -9,9 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   run-xau-hourly-bot:
     runs-on: ubuntu-latest
@@ -22,30 +19,66 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
-      - name: Debug required files and secrets
+      - name: Preflight checks
+        shell: bash
         run: |
+          set -e
+          echo "Repo files:"
+          ls -la
+
+          echo "Python version:"
+          python --version
+
           echo "Checking required files..."
-          test -f requirements.txt  (echo "ERROR: requirements.txt is missing from repo root" && exit 1)
-          test -f xau_hourly_bot_job.py  (echo "ERROR: xau_hourly_bot_job.py is missing from repo root" && exit 1)
+          if [ ! -f "requirements.txt" ]; then
+            echo "ERROR: requirements.txt is missing from the repo root."
+            exit 10
+          fi
+
+          if [ ! -f "xau_hourly_bot_job.py" ]; then
+            echo "ERROR: xau_hourly_bot_job.py is missing from the repo root."
+            exit 11
+          fi
 
           echo "Checking GitHub secrets..."
-          test -n "$SUPABASE_URL"  (echo "ERROR: SUPABASE_URL secret is missing" && exit 1)
-          test -n "$SUPABASE_SERVICE_ROLE_KEY"  (echo "ERROR: SUPABASE_SERVICE_ROLE_KEY secret is missing" && exit 1)
+          if [ -z "$SUPABASE_URL" ]; then
+            echo "ERROR: SUPABASE_URL GitHub secret is missing."
+            exit 12
+          fi
 
-          echo "All required files and secrets found."
+          if [ -z "$SUPABASE_SERVICE_ROLE_KEY" ]; then
+            echo "ERROR: SUPABASE_SERVICE_ROLE_KEY GitHub secret is missing."
+            exit 13
+          fi
+
+          echo "Preflight checks passed."
 
       - name: Install dependencies
+        shell: bash
         run: |
+          set -e
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run hourly XAU fundamental bot
+      - name: Import test
+        shell: bash
         run: |
-          python xau_hourly_bot_job.py
+          set -e
+          python - <<'PY'
+          import pandas, numpy, yfinance, feedparser, requests
+          from supabase import create_client
+          print("Python imports OK.")
+          PY
+
+      - name: Run hourly XAU fundamental bot
+        shell: bash
+        run: |
+          set -e
+          python -u xau_hourly_bot_job.py
