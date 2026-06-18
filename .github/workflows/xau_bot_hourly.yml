@@ -14,8 +14,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      # Correct Supabase project URL copied from your Project ID.
-      SUPABASE_URL: https://iycqrfpafqpawwrrzkexh.supabase.co
+      # Supabase project URL, using the exact project ref you confirmed.
+      SUPABASE_URL: https://iycqrpfapqpawwrzkexh.supabase.co
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
     steps:
